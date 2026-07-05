@@ -1,0 +1,77 @@
+# Файл алертов для приложения Venera
+# Формат: CEL (Configuration Expression Language)
+
+# ============================================================================
+# Алерт 1 - Подозрительный IP-адрес
+# ============================================================================
+alert_id = "ALERT_IP_001"
+name = "Подозрительный IP-адрес"
+description = "Обнаружен IP-адрес из черного списка"
+condition = "ip in blacklist"
+severity = "high"
+enabled = true
+actions = ["log", "notify"]
+notification_email = "admin@example.com"
+notification_slack = "alerts-channel"
+
+# ============================================================================
+# Алерт 2 - Подозрительный домен
+# ============================================================================
+alert_id = "ALERT_DOMAIN_001"
+name = "Подозрительный домен"
+description = "Попытка подключения к известному вредоносному домену"
+condition = "domain in malware_domains"
+severity = "critical"
+enabled = true
+actions = ["log", "notify", "block"]
+notification_email = "security@example.com"
+
+# ============================================================================
+# Алерт 3 - Подозрительный порт
+# ============================================================================
+alert_id = "ALERT_PORT_001"
+name = "Подозрительный порт"
+description = "Попытка подключения к известному опасному порту"
+condition = "port in dangerous_ports"
+severity = "medium"
+enabled = true
+actions = ["log", "notify"]
+notification_email = "admin@example.com"
+
+# ============================================================================
+# Алерт 4 - Высокая частота запросов
+# ============================================================================
+alert_id = "ALERT_RATE_001"
+name = "Высокая частота запросов"
+description = "Обнаружена аномально высокая частота запросов"
+condition = "request_rate > threshold"
+severity = "low"
+enabled = true
+actions = ["log", "notify"]
+threshold_value = 1000
+threshold_unit = "requests_per_minute"
+
+# ============================================================================
+# Алерт 5 - Подозрительный User-Agent
+# ============================================================================
+alert_id = "ALERT_UA_001"
+name = "Подозрительный User-Agent"
+description = "Обнаружен известный вредоносный User-Agent"
+condition = "user_agent in malware_ua"
+severity = "high"
+enabled = true
+actions = ["log", "notify", "block"]
+notification_email = "security@example.com"
+
+# ============================================================================
+# Алерт 6 - Неавторизованный доступ
+# ============================================================================
+alert_id = "ALERT_AUTH_001"
+name = "Неавторизованный доступ"
+description = "Обнаружена попытка неавторизованного доступа"
+condition = "auth_result == 'failed'"
+severity = "high"
+enabled = true
+actions = ["log", "notify", "block"]
+max_failed_attempts = 5
+lockout_duration = 300
