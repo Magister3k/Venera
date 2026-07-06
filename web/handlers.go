@@ -1,20 +1,18 @@
-// handlers.go - HTTP обработчики для веб-интерфейса Venera
+// handlers.go - Обработчики HTTP запросов для веб-интерфейса Venera
 //
-// Этот модуль содержит HTTP обработчики для всех API endpoints
-// веб-интерфейса системы сбора идентификаторов.
+// Этот модуль обеспечивает обработку HTTP запросов для веб-интерфейса
+// Venera, включая все разделы: процессы, статистика, база данных, настройки, логи, диагностика.
 //
 // Основные функции:
-// - Обработка запросов процессов (CRUD)
-// - Обработка запросов настроек (CRUD)
-// - Обработка запросов статистики
-// - Обработка запросов базы данных
-// - Обработка запросов логов
-// - Обработка запросов диагностики
+// - Обработка GET/POST запросов для всех разделов
+// - Возврат HTML страниц
+// - Обработка AJAX запросов
+// - Управление процессами через HTTP API
 //
 // Использование:
 // import "venera/web"
-// server := web.NewServer(cfg, processManager, dragonflyDB, postgresDB)
-// server.setupRoutes()
+// handlers := web.NewHandlers(cfg, processManager, dragonflyDB, postgresDB, logger)
+// server.HandleFunc("/processes", handlers.ProcessesHandler)
 
 package web
 
@@ -23,389 +21,492 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 	"venera/config"
 	"venera/data"
+	"venera/metrics"
 	"venera/processes"
 )
 
 // Handlers - структура обработчиков
 type Handlers struct {
-	cfg            *config.Config
-	processManager *processes.ProcessManager
-	dragonflyDB    *data.DragonflyDB
-	postgresDB     *data.PostgreSQL
-	log            *logrus.Logger
+	cfg              *config.Config
+	processManager   *processes.ProcessManager
+	dragonflyDB      *data.DragonflyDB
+	postgresDB       *data.PostgreSQL
+	logger           *logrus.Logger
+	metricsCollector *metrics.Collector
 }
 
 // NewHandlers - создание новых обработчиков
-func NewHandlers(cfg *config.Config, processManager *processes.ProcessManager, dragonflyDB *data.DragonflyDB, postgresDB *data.PostgreSQL) *Handlers {
+func NewHandlers(cfg *config.Config, processManager *processes.ProcessManager, dragonflyDB *data.DragonflyDB, postgresDB *data.PostgreSQL, logger *logrus.Logger, metricsCollector *metrics.Collector) *Handlers {
 	return &Handlers{
-		cfg:            cfg,
-		processManager: processManager,
-		dragonflyDB:    dragonflyDB,
-		postgresDB:     postgresDB,
-		log:            logrus.WithField("module", "handlers"),
+		cfg:              cfg,
+		processManager:   processManager,
+		dragonflyDB:      dragonflyDB,
+		postgresDB:       postgresDB,
+		logger:           logger,
+		metricsCollector: metricsCollector,
 	}
 }
 
-// SetupRoutes - настройка маршрутов
-func (h *Handlers) SetupRoutes(router *gin.Engine) {
-	// API маршруты
-	api := router.Group("/api")
-	{
-		// Процессы
-		api.GET("/processes", h.getProcesses)
-		api.POST("/processes", h.addProcess)
-		api.PUT("/processes/:id", h.updateProcess)
-		api.DELETE("/processes/:id", h.deleteProcess)
-		api.POST("/processes/:id/start", h.startProcess)
-		api.POST("/processes/:id/stop", h.stopProcess)
-		api.POST("/processes/start-all", h.startAllProcesses)
-		api.POST("/processes/stop-all", h.stopAllProcesses)
-
-		// Статистика
-		api.GET("/statistics", h.getStatistics)
-		api.GET("/statistics/process/:id", h.getProcessStatistics)
-
-		// База данных
-		api.GET("/db/data", h.getDBData)
-		api.GET("/db/statistics", h.getDBStatistics)
-
-		// Настройки
-		api.GET("/settings", h.getSettings)
-		api.POST("/settings", h.saveSettings)
-
-		// Логи
-		api.GET("/logs", h.getLogs)
-		api.GET("/logs/file", h.getLogFile)
-
-		// Диагностика
-		api.GET("/diagnose", h.getDiagnose)
-
-		// Выполнение команд
-		api.POST("/commands/:command", h.executeCommand)
+// ProcessesHandler - обработчик для раздела "Процессы"
+func (h *Handlers) ProcessesHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.serveStaticFile(w, r, "static/processes/processes.html")
+	case http.MethodPost:
+		h.handleProcessAction(w, r)
+	default:
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 	}
 }
 
-// getProcesses - получение списка процессов
-func (h *Handlers) getProcesses(c *gin.Context) {
-	processes := h.processManager.GetAllProcesses()
-
-	c.JSON(http.StatusOK, gin.H{
-		"processes": processes,
-		"count":     len(processes),
-	})
+// StatisticsHandler - обработчик для раздела "Статистика"
+func (h *Handlers) StatisticsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.serveStaticFile(w, r, "static/statistics/statistics.html")
+	case http.MethodPost:
+		h.handleStatisticsRequest(w, r)
+	default:
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
 }
 
-// addProcess - добавление процесса
-func (h *Handlers) addProcess(c *gin.Context) {
-	var req struct {
-		ID                 string `json:"id"`
-		Type               string `json:"type"`
-		Name               string `json:"name"`
-		IP                 string `json:"ip"`
-		Port               int    `json:"port"`
-		Path               string `json:"path"`
-		ScanSubfolders     bool   `json:"scan_subfolders"`
-		MonitorNewFiles    bool   `json:"monitor_new_files"`
+// DatabaseHandler - обработчик для раздела "База данных"
+func (h *Handlers) DatabaseHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.serveStaticFile(w, r, "static/db/db.html")
+	case http.MethodPost:
+		h.handleDatabaseRequest(w, r)
+	default:
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 	}
+}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// SettingsHandler - обработчик для раздела "Настройки"
+func (h *Handlers) SettingsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.serveStaticFile(w, r, "static/settings/settings.html")
+	case http.MethodPost:
+		h.handleSettingsRequest(w, r)
+	default:
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
+}
+
+// LogsHandler - обработчик для раздела "Логи"
+func (h *Handlers) LogsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.serveStaticFile(w, r, "static/logs/logs.html")
+	case http.MethodPost:
+		h.handleLogsRequest(w, r)
+	default:
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
+}
+
+// DiagnoseHandler - обработчик для раздела "Диагностика"
+func (h *Handlers) DiagnoseHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.serveStaticFile(w, r, "static/diagnose/diagnose.html")
+	case http.MethodPost:
+		h.handleDiagnoseRequest(w, r)
+	default:
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
+}
+
+// RootHandler - обработчик корневого пути
+func (h *Handlers) RootHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" || r.URL.Path == "" {
+		h.serveStaticFile(w, r, "static/index.html")
+		return
+	}
+	http.NotFound(w, r)
+}
+
+// serveStaticFile - сервер статического файла
+func (h *Handlers) serveStaticFile(w http.ResponseWriter, r *http.Request, filePath string) {
+	fullPath := "." + filePath
+
+	// Проверка существования файла
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		http.Error(w, "Файл не найден", http.StatusNotFound)
 		return
 	}
 
-	cfg := config.ProcessConfig{
-		ID:             req.ID,
-		Type:           req.Type,
-		Name:           req.Name,
-		IP:             req.IP,
-		Port:           req.Port,
-		Path:           req.Path,
-		ScanSubfolders: req.ScanSubfolders,
-		MonitorNewFiles: req.MonitorNewFiles,
-	}
+	// Установка заголовков
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 
-	if err := h.processManager.AddProcess(req.ID, cfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	h.log.Infof("Процесс %s добавлен", req.ID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Процесс добавлен",
-		"id":      req.ID,
-	})
-}
-
-// updateProcess - обновление процесса
-func (h *Handlers) updateProcess(c *gin.Context) {
-	id := c.Param("id")
-	wrapper, err := h.processManager.GetProcess(id)
+	// Чтение и отправка файла
+	content, err := os.ReadFile(fullPath)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		http.Error(w, "Ошибка чтения файла", http.StatusInternalServerError)
 		return
 	}
 
-	var req struct {
-		Name           string `json:"name"`
-		IP             string `json:"ip"`
-		Port           int    `json:"port"`
-		Path           string `json:"path"`
-		ScanSubfolders bool   `json:"scan_subfolders"`
-		MonitorNewFiles bool  `json:"monitor_new_files"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Обновление конфигурации
-	wrapper.Config.Name = req.Name
-	wrapper.Config.IP = req.IP
-	wrapper.Config.Port = req.Port
-	wrapper.Config.Path = req.Path
-	wrapper.Config.ScanSubfolders = req.ScanSubfolders
-	wrapper.Config.MonitorNewFiles = req.MonitorNewFiles
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Процесс обновлен",
-		"id":      id,
-	})
+	w.Write(content)
 }
 
-// deleteProcess - удаление процесса
-func (h *Handlers) deleteProcess(c *gin.Context) {
-	id := c.Param("id")
-	if err := h.processManager.DeleteProcess(id); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// handleProcessAction - обработка действий с процессами
+func (h *Handlers) handleProcessAction(w http.ResponseWriter, r *http.Request) {
+	// Декодирование запроса
+	var request struct {
+		Action   string `json:"action"`
+		ProcessID string `json:"process_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Ошибка декодирования запроса", http.StatusBadRequest)
 		return
 	}
 
-	h.log.Infof("Процесс %s удален", id)
+	// Выполнение действия
+	var response map[string]interface{}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Процесс удален",
-		"id":      id,
-	})
+	switch request.Action {
+	case "start":
+		err := h.processManager.StartProcess(request.ProcessID)
+		if err != nil {
+			response = map[string]interface{}{"success": false, "error": err.Error()}
+		} else {
+			response = map[string]interface{}{"success": true, "message": "Процесс запущен"}
+		}
+	case "stop":
+		err := h.processManager.StopProcess(request.ProcessID)
+		if err != nil {
+			response = map[string]interface{}{"success": false, "error": err.Error()}
+		} else {
+			response = map[string]interface{}{"success": true, "message": "Процесс остановлен"}
+		}
+	case "delete":
+		err := h.processManager.DeleteProcess(request.ProcessID)
+		if err != nil {
+			response = map[string]interface{}{"success": false, "error": err.Error()}
+		} else {
+			response = map[string]interface{}{"success": true, "message": "Процесс удален"}
+		}
+	case "add":
+		// Добавление нового процесса
+		var processData struct {
+			ID                 string `json:"id"`
+			Type               string `json:"type"`
+			Name               string `json:"name"`
+			IP                 string `json:"ip"`
+			Port               int    `json:"port"`
+			Path               string `json:"path"`
+			ScanSubfolders     bool   `json:"scan_subfolders"`
+			MonitorNewFiles    bool   `json:"monitor_new_files"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&processData); err != nil {
+			http.Error(w, "Ошибка декодирования данных процесса", http.StatusBadRequest)
+			return
+		}
+
+		err := h.processManager.AddProcess(processData.ID, processData.Type, processData.Name,
+			processData.IP, processData.Port, processData.Path,
+			processData.ScanSubfolders, processData.MonitorNewFiles)
+		if err != nil {
+			response = map[string]interface{}{"success": false, "error": err.Error()}
+		} else {
+			response = map[string]interface{}{"success": true, "message": "Процесс добавлен"}
+		}
+	default:
+		response = map[string]interface{}{"success": false, "error": "Неизвестное действие"}
+	}
+
+	// Отправка ответа
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
-// startProcess - запуск процесса
-func (h *Handlers) startProcess(c *gin.Context) {
-	id := c.Param("id")
-	if err := h.processManager.StartProcess(id); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+// handleStatisticsRequest - обработка запроса статистики
+func (h *Handlers) handleStatisticsRequest(w http.ResponseWriter, r *http.Request) {
+	// Получение метрик
+	metrics := h.getMetrics()
 
-	h.log.Infof("Процесс %s запущен", id)
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Процесс запущен",
-		"id":      id,
-	})
+	// Отправка ответа
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metrics)
 }
 
-// stopProcess - остановка процесса
-func (h *Handlers) stopProcess(c *gin.Context) {
-	id := c.Param("id")
-	if err := h.processManager.StopProcess(id); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// handleDatabaseRequest - обработка запроса базы данных
+func (h *Handlers) handleDatabaseRequest(w http.ResponseWriter, r *http.Request) {
+	// Декодирование запроса
+	var request struct {
+		Action string `json:"action"`
+		Query  string `json:"query"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Ошибка декодирования запроса", http.StatusBadRequest)
 		return
 	}
 
-	h.log.Infof("Процесс %s остановлен", id)
+	// Выполнение действия
+	var response map[string]interface{}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Процесс остановлен",
-		"id":      id,
-	})
+	switch request.Action {
+	case "query":
+		// Выполнение SQL-запроса
+		rows, err := h.postgresDB.GetDB().Query(request.Query)
+		if err != nil {
+			response = map[string]interface{}{"success": false, "error": err.Error()}
+		} else {
+			defer rows.Close()
+
+			// Получение столбцов
+			columns, err := rows.Columns()
+			if err != nil {
+				response = map[string]interface{}{"success": false, "error": err.Error()}
+				json.NewEncoder(w).Encode(response)
+				return
+			}
+
+			// Получение строк
+			values := make([][]string, 0)
+			for rows.Next() {
+				row := make([]string, len(columns))
+				rowPtr := make([]interface{}, len(columns))
+				for i := range row {
+					rowPtr[i] = &row[i]
+				}
+
+				if err := rows.Scan(rowPtr...); err != nil {
+					response = map[string]interface{}{"success": false, "error": err.Error()}
+					json.NewEncoder(w).Encode(response)
+					return
+				}
+
+				values = append(values, row)
+			}
+
+			response = map[string]interface{}{
+				"success": true,
+				"columns": columns,
+				"values":  values,
+			}
+		}
+	default:
+		response = map[string]interface{}{"success": false, "error": "Неизвестное действие"}
+	}
+
+	// Отправка ответа
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
-// startAllProcesses - запуск всех процессов
-func (h *Handlers) startAllProcesses(c *gin.Context) {
-	if err := h.processManager.StartAll(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// handleSettingsRequest - обработка запроса настроек
+func (h *Handlers) handleSettingsRequest(w http.ResponseWriter, r *http.Request) {
+	// Декодирование запроса
+	var request struct {
+		Action string `json:"action"`
+		Config map[string]interface{} `json:"config"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Ошибка декодирования запроса", http.StatusBadRequest)
 		return
 	}
 
-	h.log.Info("Все процессы запущены")
+	// Выполнение действия
+	var response map[string]interface{}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Все процессы запущены",
-	})
+	switch request.Action {
+	case "save":
+		// Сохранение конфигурации
+		err := h.cfg.SaveConfig("config.toml")
+		if err != nil {
+			response = map[string]interface{}{"success": false, "error": err.Error()}
+		} else {
+			response = map[string]interface{}{"success": true, "message": "Конфигурация сохранена"}
+		}
+	case "check_dragonfly":
+		// Проверка подключения к DragonflyDB
+		if h.dragonflyDB != nil {
+			response = map[string]interface{}{"success": true, "message": "Подключение к DragonflyDB установлено"}
+		} else {
+			response = map[string]interface{}{"success": false, "error": "Не удалось подключиться к DragonflyDB"}
+		}
+	case "check_postgres":
+		// Проверка подключения к PostgreSQL
+		if h.postgresDB != nil {
+			response = map[string]interface{}{"success": true, "message": "Подключение к PostgreSQL установлено"}
+		} else {
+			response = map[string]interface{}{"success": false, "error": "Не удалось подключиться к PostgreSQL"}
+		}
+	default:
+		response = map[string]interface{}{"success": false, "error": "Неизвестное действие"}
+	}
+
+	// Отправка ответа
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
-// stopAllProcesses - остановка всех процессов
-func (h *Handlers) stopAllProcesses(c *gin.Context) {
-	if err := h.processManager.StopAll(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// handleLogsRequest - обработка запроса логов
+func (h *Handlers) handleLogsRequest(w http.ResponseWriter, r *http.Request) {
+	// Декодирование запроса
+	var request struct {
+		Action   string `json:"action"`
+		Level    string `json:"level"`
+		FromFile string `json:"from_file"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Ошибка декодирования запроса", http.StatusBadRequest)
 		return
 	}
 
-	h.log.Info("Все процессы остановлены")
+	// Выполнение действия
+	var response map[string]interface{}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Все процессы остановлены",
-	})
+	switch request.Action {
+	case "get_logs":
+		// Получение логов из файла
+		logs := h.getLogsFromFile(request.FromFile, request.Level)
+		response = map[string]interface{}{"success": true, "logs": logs}
+	case "get_log_files":
+		// Получение списка файлов логов
+		files := h.getLogFiles()
+		response = map[string]interface{}{"success": true, "files": files}
+	default:
+		response = map[string]interface{}{"success": false, "error": "Неизвестное действие"}
+	}
+
+	// Отправка ответа
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
-// getStatistics - получение статистики
-func (h *Handlers) getStatistics(c *gin.Context) {
-	stats, err := h.postgresDB.GetStatistics()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+// handleDiagnoseRequest - обработка запроса диагностики
+func (h *Handlers) handleDiagnoseRequest(w http.ResponseWriter, r *http.Request) {
+	// Декодирование запроса
+	var request struct {
+		Action string `json:"action"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Ошибка декодирования запроса", http.StatusBadRequest)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"statistics": stats,
-	})
+	// Выполнение действия
+	var response map[string]interface{}
+
+	switch request.Action {
+	case "run":
+		// Запуск диагностики
+		report := h.runDiagnosis()
+		response = map[string]interface{}{"success": true, "report": report}
+	default:
+		response = map[string]interface{}{"success": false, "error": "Неизвестное действие"}
+	}
+
+	// Отправка ответа
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
-// getProcessStatistics - получение статистики процесса
-func (h *Handlers) getProcessStatistics(c *gin.Context) {
-	id := c.Param("id")
-	wrapper, err := h.processManager.GetProcess(id)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+// getMetrics - получение метрик для статистики
+func (h *Handlers) getMetrics() map[string]interface{} {
+	metrics := make(map[string]interface{})
+
+	// Получение системных метрик
+	if h.metricsCollector != nil {
+		if systemMetrics, err := h.metricsCollector.GetRAMUsage(); err == nil {
+			metrics["ram"] = systemMetrics
+		}
+		if diskMetrics, err := h.metricsCollector.GetDiskUsage("."); err == nil {
+			metrics["disk"] = diskMetrics
+		}
+		metrics["cpu_usage"] = h.metricsCollector.GetCPUUsage()
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"process": wrapper,
-	})
-}
+	// Получение метрик процессов
+	processMetrics := h.processManager.GetProcessMetrics()
+	metrics["processes"] = processMetrics
 
-// getDBData - получение данных из базы
-func (h *Handlers) getDBData(c *gin.Context) {
-	source := c.Query("source")
-	key := c.Query("key")
-	value := c.Query("value")
-	startDate := c.Query("start_date")
-	endDate := c.Query("end_date")
-	limit := c.DefaultQuery("limit", "100")
-	offset := c.DefaultQuery("offset", "0")
-
-	records, err := h.postgresDB.GetDataByFilter(source, key, value, 0, 0, 100, 0)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"records": records,
-		"count":   len(records),
-	})
-}
-
-// getDBStatistics - получение статистики базы
-func (h *Handlers) getDBStatistics(c *gin.Context) {
-	stats, err := h.postgresDB.GetStatistics()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"statistics": stats,
-	})
-}
-
-// getSettings - получение настроек
-func (h *Handlers) getSettings(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"settings": h.cfg,
-	})
-}
-
-// saveSettings - сохранение настроек
-func (h *Handlers) saveSettings(c *gin.Context) {
-	var newCfg config.Config
-	if err := c.ShouldBindJSON(&newCfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	if err := newCfg.SaveConfig("config.toml"); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	h.cfg = &newCfg
-
-	h.log.Info("Настройки сохранены")
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Настройки сохранены",
-	})
-}
-
-// getLogs - получение логов
-func (h *Handlers) getLogs(c *gin.Context) {
-	logDir := h.cfg.Logging.Directory
-
-	// Получение списка лог-файлов
-	files, err := os.ReadDir(logDir)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	var logFiles []string
-	for _, file := range files {
-		if !file.IsDir() && (strings.HasSuffix(file.Name(), ".log") || strings.HasSuffix(file.Name(), ".log.gz")) {
-			logFiles = append(logFiles, file.Name())
+	// Получение метрик баз данных
+	if h.dragonflyDB != nil {
+		if dragonflyMetrics, err := h.metricsCollector.GetDragonflyDBStats(h.dragonflyDB); err == nil {
+			metrics["dragonflydb"] = dragonflyMetrics
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"logs": logFiles,
-		"count": len(logFiles),
-	})
-}
-
-// getLogFile - получение файла логов
-func (h *Handlers) getLogFile(c *gin.Context) {
-	filename := c.Query("file")
-	filePath := filepath.Join(h.cfg.Logging.Directory, filename)
-
-	// Проверка существования файла
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Файл не найден"})
-		return
+	if h.postgresDB != nil {
+		if postgresMetrics, err := h.metricsCollector.GetPostgreSQLStats(h.postgresDB); err == nil {
+			metrics["postgresql"] = postgresMetrics
+		}
 	}
 
-	// Отправка файла
-	c.File(filePath)
+	return metrics
 }
 
-// getDiagnose - получение диагностики
-func (h *Handlers) getDiagnose(c *gin.Context) {
-	// TODO: Реализовать получение диагностики
-	c.JSON(http.StatusOK, gin.H{
-		"diagnose": map[string]interface{}{},
-	})
+// getLogsFromFile - получение логов из файла
+func (h *Handlers) getLogsFromFile(filePath, level string) []string {
+	// TODO: Реализовать чтение логов из файла
+	// Для текущей реализации возвращаем заглушку
+	return []string{"Логи не доступны"}
 }
 
-// executeCommand - выполнение команды
-func (h *Handlers) executeCommand(c *gin.Context) {
-	command := c.Param("command")
-
-	// TODO: Реализовать выполнение команд
-	c.JSON(http.StatusOK, gin.H{
-		"message": fmt.Sprintf("Команда %s выполнена", command),
-	})
+// getLogFiles - получение списка файлов логов
+func (h *Handlers) getLogFiles() []string {
+	// TODO: Реализовать получение списка файлов логов
+	// Для текущей реализации возвращаем заглушку
+	return []string{"logs.log"}
 }
 
-// GetConfig - получение конфигурации
-func (h *Handlers) GetConfig() *config.Config {
-	return h.cfg
+// runDiagnosis - запуск диагностики
+func (h *Handlers) runDiagnosis() string {
+	// TODO: Реализовать диагностику
+	// Для текущей реализации возвращаем заглушку
+	return "Диагностика не реализована"
+}
+
+// GetProcessesList - получение списка процессов
+func (h *Handlers) GetProcessesList() []processes.ProcessConfig {
+	return h.processManager.GetProcessesList()
+}
+
+// GetProcessStatus - получение статуса процесса
+func (h *Handlers) GetProcessStatus(processID string) string {
+	return h.processManager.GetProcessStatus(processID)
+}
+
+// StartProcess - запуск процесса
+func (h *Handlers) StartProcess(processID string) error {
+	return h.processManager.StartProcess(processID)
+}
+
+// StopProcess - остановка процесса
+func (h *Handlers) StopProcess(processID string) error {
+	return h.processManager.StopProcess(processID)
+}
+
+// DeleteProcess - удаление процесса
+func (h *Handlers) DeleteProcess(processID string) error {
+	return h.processManager.DeleteProcess(processID)
+}
+
+// StartAllProcesses - запуск всех процессов
+func (h *Handlers) StartAllProcesses() error {
+	return h.processManager.StartAll()
+}
+
+// StopAllProcesses - остановка всех процессов
+func (h *Handlers) StopAllProcesses() error {
+	return h.processManager.StopAll()
 }

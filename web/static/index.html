@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Venera - Система сбора идентификаторов</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="libs/jquery.min.js"></script>
+    <script src="libs/socket.io.min.js"></script>
+    <script src="main.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Venera</h1>
+            <p>Система сбора идентификаторов в потоке пакетных данных</p>
+        </header>
+
+        <nav class="navbar">
+            <a href="#" data-section="processes" class="nav-item active">Процессы</a>
+            <a href="#" data-section="statistics" class="nav-item">Статистика</a>
+            <a href="#" data-section="db" class="nav-item">База данных</a>
+            <a href="#" data-section="settings" class="nav-item">Настройки</a>
+            <a href="#" data-section="logs" class="nav-item">Логи</a>
+            <a href="#" data-section="diagnose" class="nav-item">Диагностика</a>
+        </nav>
+
+        <main class="content">
+            <!-- Секция процессов -->
+            <div id="section-processes" class="section active">
+                <div class="section-header">
+                    <h2>Процессы обработки данных</h2>
+                    <div class="buttons">
+                        <button id="btn-add-network" class="btn btn-primary">+ Сетевой поток</button>
+                        <button id="btn-add-folder" class="btn btn-primary">+ Папка с файлами</button>
+                        <button id="btn-add-file" class="btn btn-primary">+ Отдельный файл</button>
+                        <button id="btn-start-all" class="btn btn-success">Запустить все</button>
+                        <button id="btn-stop-all" class="btn btn-warning">Остановить все</button>
+                        <button id="btn-save" class="btn btn-info">Сохранить</button>
+                    </div>
+                </div>
+
+                <div class="processes-table">
+                    <table id="processes-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Название</th>
+                                <th>Тип</th>
+                                <th>Источник</th>
+                                <th>Статус</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="processes-body">
+                            <!-- Процессы будут добавлены через JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Секция статистики -->
+            <div id="section-statistics" class="section">
+                <div class="section-header">
+                    <h2>Статистика в реальном времени</h2>
+                </div>
+                <div class="statistics-grid">
+                    <div class="stat-card">
+                        <h3>RAM</h3>
+                        <div class="stat-value" id="stat-ram">0 MB</div>
+                        <div class="stat-bar" id="stat-ram-bar"></div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Disk</h3>
+                        <div class="stat-value" id="stat-disk">0 GB</div>
+                        <div class="stat-bar" id="stat-disk-bar"></div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>CPU</h3>
+                        <div class="stat-value" id="stat-cpu">0%</div>
+                        <div class="stat-bar" id="stat-cpu-bar"></div>
+                    </div>
+                </div>
+                <div class="statistics-details">
+                    <h3>Метрики процессов</h3>
+                    <table id="stats-processes-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>JSON пары</th>
+                                <th>Выбрано</th>
+                                <th>PostgreSQL</th>
+                                <th>Скорость</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stats-processes-body">
+                            <!-- Статистика процессов -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Секция базы данных -->
+            <div id="section-db" class="section">
+                <div class="section-header">
+                    <h2>База данных PostgreSQL</h2>
+                    <div class="buttons">
+                        <input type="text" id="db-filter" placeholder="Фильтр данных">
+                        <button id="btn-db-query" class="btn btn-primary">Запрос</button>
+                        <button id="btn-db-export" class="btn btn-info">Экспорт в Excel</button>
+                    </div>
+                </div>
+                <div class="db-table">
+                    <table id="db-data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Источник</th>
+                                <th>Ключ</th>
+                                <th>Значение</th>
+                                <th>Первое появление</th>
+                                <th>Последнее появление</th>
+                            </tr>
+                        </thead>
+                        <tbody id="db-data-body">
+                            <!-- Данные из базы -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Секция настроек -->
+            <div id="section-settings" class="section">
+                <div class="section-header">
+                    <h2>Настройки системы</h2>
+                    <button id="btn-save-settings" class="btn btn-primary">Сохранить</button>
+                    <button id="btn-check-dragonfly" class="btn btn-info">Проверить DragonflyDB</button>
+                    <button id="btn-check-postgres" class="btn btn-info">Проверить PostgreSQL</button>
+                </div>
+                <div class="settings-tree">
+                    <details>
+                        <summary>Generic</summary>
+                        <div class="settings-form">
+                            <label>Режим работы:</label>
+                            <select id="setting-mode">
+                                <option value="tray">Системный трей</option>
+                                <option value="service">Служба Windows</option>
+                            </select>
+                            <label>Автозапуск процессов:</label>
+                            <input type="checkbox" id="setting-auto-start">
+                            <label>Максимум процессов:</label>
+                            <input type="number" id="setting-max-processes" min="1" max="20">
+                            <label>Порт веб-сервера:</label>
+                            <input type="number" id="setting-web-port">
+                        </div>
+                    </details>
+                    <details>
+                        <summary>Paths</summary>
+                        <div class="settings-form">
+                            <label>Путь к podman.exe:</label>
+                            <input type="text" id="setting-podman-path">
+                            <label>Путь к tshark.exe:</label>
+                            <input type="text" id="setting-tshark-path">
+                            <label>Путь к generic.flt:</label>
+                            <input type="text" id="setting-filter-file">
+                            <label>Путь к generic.ctr:</label>
+                            <input type="text" id="setting-control-file">
+                            <label>Путь к generic.alr:</label>
+                            <input type="text" id="setting-alerts-file">
+                            <label>Образ DragonflyDB:</label>
+                            <input type="text" id="setting-dragonfly-image">
+                            <label>Резервная папка DragonflyDB:</label>
+                            <input type="text" id="setting-dragonfly-backup">
+                        </div>
+                    </details>
+                    <details>
+                        <summary>DragonflyDB</summary>
+                        <div class="settings-form">
+                            <label>Хост:</label>
+                            <input type="text" id="setting-df-host">
+                            <label>Порт:</label>
+                            <input type="number" id="setting-df-port">
+                            <label>Пароль:</label>
+                            <input type="password" id="setting-df-password">
+                            <label>База данных:</label>
+                            <input type="number" id="setting-df-database">
+                            <label>Размер батча:</label>
+                            <input type="number" id="setting-df-batch-size">
+                            <label>Таймаут:</label>
+                            <input type="number" id="setting-df-timeout">
+                        </div>
+                    </details>
+                    <details>
+                        <summary>PostgreSQL</summary>
+                        <div class="settings-form">
+                            <label>Хост:</label>
+                            <input type="text" id="setting-pg-host">
+                            <label>Порт:</label>
+                            <input type="number" id="setting-pg-port">
+                            <label>База данных:</label>
+                            <input type="text" id="setting-pg-database">
+                            <label>Пользователь:</label>
+                            <input type="text" id="setting-pg-user">
+                            <label>Пароль:</label>
+                            <input type="password" id="setting-pg-password">
+                            <label>Макс. соединений:</label>
+                            <input type="number" id="setting-pg-max-connections">
+                        </div>
+                    </details>
+                </div>
+            </div>
+
+            <!-- Секция логов -->
+            <div id="section-logs" class="section">
+                <div class="section-header">
+                    <h2>Логи системы</h2>
+                    <div class="buttons">
+                        <input type="text" id="log-filter" placeholder="Фильтр сообщений (Ctrl+F)">
+                        <button id="btn-clear-search" class="btn btn-secondary">Esc</button>
+                        <button id="btn-export-html" class="btn btn-info">Экспорт в HTML</button>
+                        <button id="btn-export-pdf" class="btn btn-info">Экспорт в PDF</button>
+                    </div>
+                </div>
+                <div class="logs-container">
+                    <div class="log-filters">
+                        <label>Тип сообщения:</label>
+                        <select id="log-level-filter">
+                            <option value="all">Все</option>
+                            <option value="debug">Debug</option>
+                            <option value="info">Info</option>
+                            <option value="warn">Warning</option>
+                            <option value="error">Error</option>
+                        </select>
+                        <label>Файл:</label>
+                        <select id="log-file-select"></select>
+                    </div>
+                    <div class="log-messages" id="log-messages">
+                        <!-- Сообщения логов -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Секция диагностики -->
+            <div id="section-diagnose" class="section">
+                <div class="section-header">
+                    <h2>Диагностика системы</h2>
+                    <div class="buttons">
+                        <button id="btn-run-diagnose" class="btn btn-primary">Запустить диагностику</button>
+                        <button id="btn-export-report" class="btn btn-info">Экспорт отчета</button>
+                        <button id="btn-create-archive" class="btn btn-info">Архив с логами</button>
+                    </div>
+                </div>
+                <div class="diagnose-results" id="diagnose-results">
+                    <!-- Результаты диагностики -->
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <span id="app-version">Venera 1.0.0</span>
+            <span id="status-indicator" class="status-indicator">Статус: Ожидание</span>
+        </footer>
+    </div>
+</body>
+</html>
