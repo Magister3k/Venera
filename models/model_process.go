@@ -105,8 +105,7 @@ type ProcessAction struct {
 	Action string `json:"action"` // start, stop, restart, delete
 }
 
-{"text": ""}
-// ProcessList - список процессов
+// ProcessList - список процессов"
 type ProcessList struct {
 	Processes []Process `json:"processes"`
 	Total     int       `json:"total"`
