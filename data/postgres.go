@@ -360,10 +360,7 @@ func (db *PostgreSQL) GetDatabaseSize() (int64, error) {
 	return size, nil
 }
 
-// GetPool - получение пула соединений
-func (db *PostgreSQL) GetPool() *pgxpool.Pool {
-	return db.pool
-}
+{"text": "// GetDB - получение пула соединений (для совместимости с web/handlers.go)\nfunc (db *PostgreSQL) GetDB() *pgxpool.Pool {\n\treturn db.pool\n}\n\n// GetPool - получение пула соединений\nfunc (db *PostgreSQL) GetPool() *pgxpool.Pool {\n\treturn db.pool\n}"}
 
 // GetConfig - получение конфигурации подключения
 func (db *PostgreSQL) GetConfig() PostgreSQLConfig {
