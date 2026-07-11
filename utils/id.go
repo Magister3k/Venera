@@ -1,101 +1,95 @@
-// id.go - Генерация ID для процессов и объектов
+// id.go - Генерация уникальных идентификаторов для процессов
 //
-// Этот модуль обеспечивает генерацию уникальных ID для процессов
-// и других объектов системы Venera.
+// Этот модуль обеспечивает генерацию уникальных ID для процессов обработки данных.
 //
 // Основные функции:
-// - Генерация уникальных ID для процессов
-// - Формат ID: process_YYYYMMDD_HHMMSS_N
-// - Проверка уникальности ID
+// - Генерация UUID для процессов
+// - Генерация уникальных имен для очередей
+// - Уникализация идентификаторов
 //
 // Использование:
 // import "venera/utils"
-// id := utils.GenerateProcessID()
-// fmt.Println(id) // "process_20260705_150405_123"
+// id := GenerateProcessID()
+// queueName := GenerateQueueName(id)
 
 package utils
 
 import (
-	"fmt"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-// IDGenerator - генератор ID
+// IDGenerator - генератор уникальных ID
 type IDGenerator struct {
 	mu       sync.Mutex
-	counters map[string]int
+	sequence uint64
 }
 
-// GlobalIDGenerator - глобальный генератор ID
-var GlobalIDGenerator *IDGenerator
+// Global generator - глобальный генератор ID
+var (
+	globalGenerator *IDGenerator
+	once            sync.Once
+)
 
-func init() {
-	GlobalIDGenerator = &IDGenerator{
-		counters: make(map[string]int),
-	}
+// GetIDGenerator - получить глобальный генератор ID
+func GetIDGenerator() *IDGenerator {
+	once.Do(func() {
+		globalGenerator = &IDGenerator{
+			sequence: uint64(time.Now().UnixNano()),
+		}
+	})
+	return globalGenerator
 }
 
-// GenerateProcessID - генерация ID процесса
+// GenerateProcessID - генерация уникального ID для процесса
 func GenerateProcessID() string {
-	return GenerateID("process")
+	g := GetIDGenerator()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.sequence++
+	return uuid.New().String()[:8] // Первые 8 символов UUID
 }
 
-// GenerateQueueID - генерация ID очереди
-func GenerateQueueID() string {
-	return GenerateID("queue")
+// GenerateQueueName - генерация имени очереди для процесса
+func GenerateQueueName(processID string) string {
+	return "queue_" + processID
 }
 
-// GenerateSetID - генерация ID множества
-func GenerateSetID() string {
-	return GenerateID("set")
+// GenerateSortedSetName - генерация имени sorted set для процесса
+func GenerateSortedSetName(processID string) string {
+	return "sorted_" + processID
 }
 
-// GenerateID - генерация ID с префиксом
-func GenerateID(prefix string) string {
-	GlobalIDGenerator.mu.Lock()
-	defer GlobalIDGenerator.mu.Unlock()
-
-	// Генерация времени
-	now := time.Now()
-	timestamp := now.Format("20060102_150405")
-
-	// Генерация счетчика
-	counter := GlobalIDGenerator.counters[prefix]
-	GlobalIDGenerator.counters[prefix] = counter + 1
-
-	// Формирование ID
-	id := fmt.Sprintf("%s_%s_%d", prefix, timestamp, counter)
-
-	return id
+// GenerateCounterName - генерация имени счетчика для процесса
+func GenerateCounterName(processID string) string {
+	return "counter_" + processID
 }
 
-// GenerateProcessConfigID - генерация ID конфигурации процесса
-func GenerateProcessConfigID() string {
-	return GenerateID("config")
+// GenerateTimerName - генерация имени таймера для процесса
+func GenerateTimerName(processID string) string {
+	return "timer_" + processID
 }
 
-// GenerateAlertID - генерация ID алерта
-func GenerateAlertID() string {
-	return GenerateID("alert")
+// GenerateChannelName - генерация имени канала для процесса
+func GenerateChannelName(processID string) string {
+	return "channel_" + processID
 }
 
-// GenerateLogID - генерация ID лога
-func GenerateLogID() string {
-	return GenerateID("log")
+// GenerateUniqueID - генерация уникального ID с временем
+func GenerateUniqueID(prefix string) string {
+	g := GetIDGenerator()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.sequence++
+	timestamp := time.Now().UnixNano()
+	return prefix + "_" + time.Now().Format("20060102_150405") + "_" + string(rune('A'+int(g.sequence%26)))
 }
 
-// IsProcessID - проверка, является ли ID ID процесса
-func IsProcessID(id string) bool {
-	return len(id) > 8 && id[:8] == "process_"
-}
-
-// IsQueueID - проверка, является ли ID ID очереди
-func IsQueueID(id string) bool {
-	return len(id) > 6 && id[:6] == "queue_"
-}
-
-// IsSetID - проверка, является ли ID ID множества
-func IsSetID(id string) bool {
-	return len(id) > 4 && id[:4] == "set_"
+// GenerateBatchID - генерация ID для пакета данных
+func GenerateBatchID() string {
+	return "batch_" + time.Now().Format("20060102_150405_000")
 }

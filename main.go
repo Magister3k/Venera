@@ -39,8 +39,10 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/windows"
@@ -72,6 +74,71 @@ var (
 	webServer      *web.Server
 	trayIcon       *tray.Tray
 )
+
+// Global mutexes for thread-safe access to global variables
+// controlsMu защищает глобальную переменную controls
+var controlsMu sync.RWMutex
+
+// alertsMu защищает глобальную переменную alerts
+var alertsMu sync.RWMutex
+
+// GetControls - безопасное получение контрольных значений
+// Возвращает копию карты для предотвращения гонок данных
+func GetControls() map[string]string {
+	controlsMu.RLock()
+	defer controlsMu.RUnlock()
+
+	// Создаем копию карты
+	result := make(map[string]string, len(controls))
+	for k, v := range controls {
+		result[k] = v
+	}
+	return result
+}
+
+// SetControls - безопасное установка контрольных значений
+func SetControls(newControls map[string]string) {
+	controlsMu.Lock()
+	defer controlsMu.Unlock()
+
+	controls = make(map[string]string, len(newControls))
+	for k, v := range newControls {
+		controls[k] = v
+	}
+}
+
+// GetAlerts - безопасное получение алертов
+// Возвращает копию карты для предотвращения гонок данных
+func GetAlerts() map[string]map[string]interface{} {
+	alertsMu.RLock()
+	defer alertsMu.RUnlock()
+
+	// Создаем копию карты
+	result := make(map[string]map[string]interface{}, len(alerts))
+	for k, v := range alerts {
+		// Создаем копию вложенной карты
+		result[k] = make(map[string]interface{}, len(v))
+		for k2, v2 := range v {
+			result[k][k2] = v2
+		}
+	}
+	return result
+}
+
+// SetAlerts - безопасное установка алертов
+func SetAlerts(newAlerts map[string]map[string]interface{}) {
+	alertsMu.Lock()
+	defer alertsMu.Unlock()
+
+	alerts = make(map[string]map[string]interface{}, len(newAlerts))
+	for k, v := range newAlerts {
+		// Создаем копию вложенной карты
+		alerts[k] = make(map[string]interface{}, len(v))
+		for k2, v2 := range v {
+			alerts[k][k2] = v2
+		}
+	}
+}
 
 func main() {
 	// Обработка аргументов командной строки
@@ -168,7 +235,8 @@ func main() {
 	}
 
 	// Создание менеджера процессов
-	processManager = processes.NewProcessManager(cfg, dragonflyDB, postgresDB, dataFilter, controls, alerts)
+	// Передаем копию controls для предотвращения гонок
+	processManager = processes.NewProcessManager(cfg, dragonflyDB, postgresDB, dataFilter, GetControls())
 
 	// Создание веб-сервера
 	webServer = web.NewServer(cfg, processManager, dragonflyDB, postgresDB, logger)

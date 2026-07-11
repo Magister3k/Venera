@@ -1,291 +1,368 @@
-// alerts.go - Работа с алертами (формат CEL)
+// alerts.go - Управление алертами для Venera
 //
-// Этот модуль обеспечивает загрузку, обработку и управление алертами
-// в формате CEL (Common Event Language) для системы Venera.
+// Этот модуль обеспечивает загрузку и управление алертами
+// из файла generic.alr, а также создание алертов программно.
 //
 // Основные функции:
-// - Загрузка алертов из файла generic.alr
-// - Обработка алертов по правилам CEL
-// - Создание алертов через код из файла
-// - Логирование алертов в централизованный лог
-//
-// Формат файла generic.alr:
-// alert_id=001
-// name=Алерт 1
-// condition=...
-// action=...
+// - Загрузка алертов из файла
+// - Создание алертов через код
+// - Проверка условий алертов
+// - Срабатывание алертов
 //
 // Использование:
 // import "venera/notify"
-// alerts, err := LoadAlertsFile("settings/generic.alr")
-// if err != nil { log.Fatal(err) }
-// ProcessAlerts(alerts)
+// alerts := LoadAlertsFile("settings/generic.alr")
 
 package notify
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
-	"venera/config"
 )
 
-// Alert - структура алерта
-type Alert struct {
-	ID        string            `toml:"alert_id"`
-	Name      string            `toml:"name"`
-	Condition string            `toml:"condition"`
-	Action    string            `toml:"action"`
-	Enabled   bool              `toml:"enabled"`
-	Metadata  map[string]string `toml:"metadata"`
+"// Alert - структура алерта\ntype Alert struct {\n\tID          string                 `toml:\"id\"`\n\tName        string                 `toml:\"name\"`\n\tDescription string                 `toml:\"description\"`\n\tCondition   string                 `toml:\"condition\"`\n\tAction      string                 `toml:\"action\"`\n\tSeverity    string                 `toml:\"severity\"`\n\tEnabled     bool                   `toml:\"enabled\"`\n\tLastTrigger time.Time              `toml:\"last_trigger\"`\n\tMetadata    map[string]interface{} `toml:\"metadata\"`\n}\n\n// AlertsManager - менеджер алертов\ntype AlertsManager struct {\n\talerts   map[string]*Alert\n\tlogger   *logrus.Logger\n\tnotifier *Notifier\n}"}
+	alerts   map[string]*Alert
+	logger   *logrus.Logger
+	notifier *Notifier
 }
 
-// Alerts - коллекция алертов
-type Alerts struct {
-	Alerts map[string]*Alert `toml:"alerts"`
-}
-
-// NewAlerts - создание новой коллекции алертов
-func NewAlerts() *Alerts {
-	return &Alerts{
-		Alerts: make(map[string]*Alert),
+// NewAlertsManager - создание нового менеджера алертов
+func NewAlertsManager(logger *logrus.Logger) *AlertsManager {
+	return &AlertsManager{
+		alerts:   make(map[string]*Alert),
+		logger:   logger,
+		notifier: GetNotifier(),
 	}
-}
-
-// AddAlert - добавление алерта
-func (a *Alerts) AddAlert(alert *Alert) {
-	if a.Alerts == nil {
-		a.Alerts = make(map[string]*Alert)
-	}
-	a.Alerts[alert.ID] = alert
-}
-
-// GetAlert - получение алерта по ID
-func (a *Alerts) GetAlert(id string) *Alert {
-	return a.Alerts[id]
-}
-
-// GetAllAlerts - получение всех алертов
-func (a *Alerts) GetAllAlerts() map[string]*Alert {
-	return a.Alerts
-}
-
-// EnableAlert - включение алерта
-func (a *Alerts) EnableAlert(id string) error {
-	if alert, ok := a.Alerts[id]; ok {
-		alert.Enabled = true
-		return nil
-	}
-	return fmt.Errorf("алерт с ID %s не найден", id)
-}
-
-// DisableAlert - отключение алерта
-func (a *Alerts) DisableAlert(id string) error {
-	if alert, ok := a.Alerts[id]; ok {
-		alert.Enabled = false
-		return nil
-	}
-	return fmt.Errorf("алерт с ID %s не найден", id)
-}
-
-// CheckAlert - проверка условия алерта
-func (a *Alerts) CheckAlert(id string, data map[string]string) (bool, error) {
-	alert, ok := a.Alerts[id]
-	if !ok {
-		return false, fmt.Errorf("алерт с ID %s не найден", id)
-	}
-
-	if !alert.Enabled {
-		return false, nil
-	}
-
-	// Простая проверка условия (можно расширить при необходимости)
-	condition := alert.Condition
-	if condition == "" {
-		return true, nil
-	}
-
-	// Проверка наличия ключа в данных
-	parts := strings.SplitN(condition, "=", 2)
-	if len(parts) == 2 {
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if dataValue, ok := data[key]; ok && dataValue == value {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
-// TriggerAlert - срабатывание алерта
-func (a *Alerts) TriggerAlert(id string, logger *logrus.Logger) error {
-	alert, ok := a.Alerts[id]
-	if !ok {
-		return fmt.Errorf("алерт с ID %s не найден", id)
-	}
-
-	if !alert.Enabled {
-		return fmt.Errorf("алерт с ID %s отключен", id)
-	}
-
-	// Логирование срабатывания алерта
-	logger.WithFields(logrus.Fields{
-		"alert_id":   id,
-		"alert_name": alert.Name,
-		"action":     alert.Action,
-	}).Warn("Срабатывание алерта")
-
-	// Выполнение действия алерта (можно расширить при необходимости)
-	if alert.Action != "" {
-		// Здесь можно добавить выполнение действий (например, отправка уведомлений)
-	}
-
-	return nil
 }
 
 // LoadAlertsFile - загрузка алертов из файла
-func LoadAlertsFile(filePath string) (*Alerts, error) {
-	// Проверка существования файла
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return NewAlerts(), nil
-	}
-
+func (am *AlertsManager) LoadAlertsFile(filePath string) error {
 	// Открытие файла
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка открытия файла алертов: %w", err)
+		// Файл не найден - это нормально
+		return nil
 	}
 	defer file.Close()
 
-	// Создание коллекции алертов
-	alerts := NewAlerts()
+	// Карта для хранения алертов
+	alerts := make(map[string]*Alert)
+	currentAlertID := ""
 	currentAlert := &Alert{}
 
 	// Чтение файла построчно
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		// Пропуск пустых строк
-		if line == "" {
-			continue
+	buf := make([]byte, 65536)
+	for {
+		n, err := file.Read(buf)
+		if err != nil && err.Error() != "EOF" {
+			return fmt.Errorf("ошибка чтения файла алертов: %w", err)
 		}
 
-		// Проверка на начало нового алерта
-		if strings.HasPrefix(line, "alert_id") {
-			// Сохраняем предыдущий алерт, если он есть
-			if currentAlert.ID != "" {
-				alerts.AddAlert(currentAlert)
-			}
-			// Создаем новый алерт
-			currentAlert = &Alert{
-				Metadata: make(map[string]string),
-			}
-			// Извлекаем ID
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				currentAlert.ID = strings.TrimSpace(parts[1])
-			}
-		} else if currentAlert.ID != "" && strings.Contains(line, "=") {
-			// Параметр алерта
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				key := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
+		if n == 0 {
+			break
+		}
 
-				switch key {
-				case "name":
-					currentAlert.Name = value
-				case "condition":
-					currentAlert.Condition = value
-				case "action":
-					currentAlert.Action = value
-				case "enabled":
-					currentAlert.Enabled = strings.ToLower(value) == "true"
-				default:
-					currentAlert.Metadata[key] = value
+		lines := strings.Split(string(buf[:n]), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			// Проверка на начало нового алерта
+			if strings.HasPrefix(line, "alert_id") {
+				// Сохранить предыдущий алерт, если есть
+				if currentAlertID != "" && currentAlert.Name != "" {
+					alerts[currentAlertID] = currentAlert
+				}
+
+				// Создать новый алерт
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					currentAlertID = strings.TrimSpace(parts[1])
+					currentAlert = &Alert{
+						ID:        currentAlertID,
+						Enabled:   true,
+						Metadata:  make(map[string]interface{}),
+					}
+				}
+			} else if currentAlertID != "" && strings.Contains(line, "=") {
+				// Параметр алерта
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					key := strings.TrimSpace(parts[0])
+					value := strings.TrimSpace(parts[1])
+
+					switch key {
+					case "name":
+						currentAlert.Name = value
+					case "description":
+						currentAlert.Description = value
+					case "condition":
+						currentAlert.Condition = value
+					case "action":
+						currentAlert.Action = value
+					case "severity":
+						currentAlert.Severity = value
+					case "enabled":
+						currentAlert.Enabled = strings.ToLower(value) == "true"
+					default:
+						currentAlert.Metadata[key] = value
+					}
 				}
 			}
 		}
 	}
 
-	// Сохраняем последний алерт
-	if currentAlert.ID != "" {
-		alerts.AddAlert(currentAlert)
+	// Сохранить последний алерт
+	if currentAlertID != "" && currentAlert.Name != "" {
+		alerts[currentAlertID] = currentAlert
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка чтения файла алертов: %w", err)
-	}
-
-	return alerts, nil
-}
-
-// SaveAlertsFile - сохранение алертов в файл
-func (a *Alerts) SaveAlertsFile(filePath string) error {
-	// Создание файла
-	file, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("ошибка создания файла алертов: %w", err)
-	}
-	defer file.Close()
-
-	// Запись алертов
-	for id, alert := range a.Alerts {
-		_, err := fmt.Fprintf(file, "alert_id=%s\n", id)
-		if err != nil {
-			return fmt.Errorf("ошибка записи алерта: %w", err)
-		}
-
-		fmt.Fprintf(file, "name=%s\n", alert.Name)
-		fmt.Fprintf(file, "condition=%s\n", alert.Condition)
-		fmt.Fprintf(file, "action=%s\n", alert.Action)
-		fmt.Fprintf(file, "enabled=%t\n", alert.Enabled)
-
-		for key, value := range alert.Metadata {
-			fmt.Fprintf(file, "%s=%s\n", key, value)
-		}
-		fmt.Fprintln(file)
-	}
-
+	// Сохранить алерты
+	am.alerts = alerts
+	am.logger.Infof("Загружено %d алертов", len(alerts))
 	return nil
 }
 
-// GenerateAlertCode - генерация кода для создания алерта
-func GenerateAlertCode(alertID, name, condition, action string) string {
-	return fmt.Sprintf(`// Alert %s: %s
-// Condition: %s
-// Action: %s
-alert := &notify.Alert{
-    ID:        "%s",
-    Name:      "%s",
-    Condition: "%s",
-    Action:    "%s",
-    Enabled:   true,
-}
-process.Alerts.AddAlert(alert)`, alertID, name, condition, action, alertID, name, condition, action)
+// AddAlert - добавить алерт
+func (am *AlertsManager) AddAlert(alert *Alert) error {
+	if alert.ID == "" {
+		alert.ID = generateAlertID()
+	}
+
+	am.alerts[alert.ID] = alert
+	am.logger.WithFields(logrus.Fields{
+		"alert_id":   alert.ID,
+		"alert_name": alert.Name,
+	}).Info("Алерт добавлен")
+	return nil
 }
 
-// CreateAlertFromConfig - создание алерта из конфигурации
-func CreateAlertFromConfig(cfg *config.Config, logger *logrus.Logger) (*Alerts, error) {
-	alerts := NewAlerts()
+// RemoveAlert - удалить алерт
+func (am *AlertsManager) RemoveAlert(id string) error {
+	if _, exists := am.alerts[id]; !exists {
+		return fmt.Errorf("алерт с ID %s не найден", id)
+	}
 
-	// Загрузка алертов из файла
-	alertsFile := cfg.GetAlertsFilePath()
-	if _, err := os.Stat(alertsFile); err == nil {
-		loadedAlerts, err := LoadAlertsFile(alertsFile)
-		if err != nil {
-			logger.Errorf("Ошибка загрузки алертов из %s: %v", alertsFile, err)
-			return nil, err
-		}
-		for id, alert := range loadedAlerts.Alerts {
-			alerts.Alerts[id] = alert
+	delete(am.alerts, id)
+	am.logger.WithFields(logrus.Fields{
+		"alert_id": id,
+	}).Info("Алерт удален")
+	return nil
+}
+
+// GetAlert - получить алерт по ID
+func (am *AlertsManager) GetAlert(id string) (*Alert, error) {
+	alert, exists := am.alerts[id]
+	if !exists {
+		return nil, fmt.Errorf("алерт с ID %s не найден", id)
+	}
+	return alert, nil
+}
+
+// GetAllAlerts - получить все алерты
+func (am *AlertsManager) GetAllAlerts() []*Alert {
+	alerts := make([]*Alert, 0, len(am.alerts))
+	for _, alert := range am.alerts {
+		alerts = append(alerts, alert)
+	}
+	return alerts
+}
+
+// EnableAlert - включить алерт
+func (am *AlertsManager) EnableAlert(id string) error {
+	alert, err := am.GetAlert(id)
+	if err != nil {
+		return err
+	}
+
+	alert.Enabled = true
+	am.logger.WithFields(logrus.Fields{
+		"alert_id": id,
+	}).Info("Алерт включен")
+	return nil
+}
+
+// DisableAlert - выключить алерт
+func (am *AlertsManager) DisableAlert(id string) error {
+	alert, err := am.GetAlert(id)
+	if err != nil {
+		return err
+	}
+
+	alert.Enabled = false
+	am.logger.WithFields(logrus.Fields{
+		"alert_id": id,
+	}).Info("Алерт выключен")
+	return nil
+}
+
+// TriggerAlert - сработать алерт
+func (am *AlertsManager) TriggerAlert(id string) error {
+	alert, err := am.GetAlert(id)
+	if err != nil {
+		return err
+	}
+
+	if !alert.Enabled {
+		return nil
+	}
+
+	alert.LastTrigger = time.Now()
+
+	// Выполнение действия алерта
+	switch alert.Action {
+	case "notification":
+		am.notifier.SendNotification(alert.Name, alert.Description, alert.Severity)
+	case "log":
+		switch alert.Severity {
+		case "critical":
+			am.logger.Errorf("ALERT [%s]: %s", alert.Name, alert.Description)
+		case "high":
+			am.logger.Errorf("ALERT [%s]: %s", alert.Name, alert.Description)
+		case "medium":
+			am.logger.Warnf("ALERT [%s]: %s", alert.Name, alert.Description)
+		case "low":
+			am.logger.Infof("ALERT [%s]: %s", alert.Name, alert.Description)
 		}
 	}
 
-	return alerts, nil
+	am.logger.WithFields(logrus.Fields{
+		"alert_id":   id,
+		"alert_name": alert.Name,
+	}).Warn("Алерт сработал")
+	return nil
+}
+
+// CheckCondition - проверить условие алерта
+func (am *AlertsManager) CheckCondition(id string, conditionData map[string]interface{}) bool {
+	alert, err := am.GetAlert(id)
+	if err != nil {
+		return false
+	}
+
+	if !alert.Enabled {
+		return false
+	}
+
+	// TODO: Реализовать проверку условия
+	// В текущей версии просто возвращаем false
+	// В будущем можно добавить поддержку CEL или других выражений
+
+	return false
+}
+
+// CheckAllAlerts - проверить все алерты
+func (am *AlertsManager) CheckAllAlerts(conditionData map[string]interface{}) []*Alert {
+	var triggered []*Alert
+
+	for _, alert := range am.alerts {
+		if alert.Enabled && am.checkConditionSimple(alert, conditionData) {
+			am.TriggerAlert(alert.ID)
+			triggered = append(triggered, alert)
+		}
+	}
+
+	return triggered
+}
+
+// checkConditionSimple - простая проверка условия
+func (am *AlertsManager) checkConditionSimple(alert *Alert, conditionData map[string]interface{}) bool {
+	// TODO: Реализовать проверку условия
+	// В текущей версии просто возвращаем false
+	// В будущем можно добавить поддержку CEL или других выражений
+
+	return false
+}
+
+// generateAlertID - генерация ID алерта
+func generateAlertID() string {
+	return "alert_" + time.Now().Format("20060102_150405_000")
+}
+
+// CreateAlertFromCode - создание алерта через код
+func CreateAlertFromCode(alertID, name, condition, action, severity string) *Alert {
+	return &Alert{
+		ID:        alertID,
+		Name:      name,
+		Condition: condition,
+		Action:    action,
+		Severity:  severity,
+		Enabled:   true,
+		Metadata:  make(map[string]interface{}),
+	}
+}
+
+// CreateDiskAlert - создание алерта для диска
+func CreateDiskAlert(diskPath string, thresholdPercent int) *Alert {
+	return &Alert{
+		ID:          fmt.Sprintf("disk_%s", diskPath),
+		Name:        fmt.Sprintf("Предупреждение о диске: %s", diskPath),
+		Description: fmt.Sprintf("Дисковое пространство на %s з��полнилось более чем на %d%%", diskPath, thresholdPercent),
+		Condition:   fmt.Sprintf("disk_usage_percent > %d", thresholdPercent),
+		Action:      "notification",
+		Severity:    "high",
+		Enabled:     true,
+		Metadata: map[string]interface{}{
+			"disk_path":   diskPath,
+			"threshold":   thresholdPercent,
+			"check_type":  "disk_usage",
+		},
+	}
+}
+
+// CreateRAMAlert - создание алерта для RAM
+func CreateRAMAlert(thresholdPercent int) *Alert {
+	return &Alert{
+		ID:          "ram_warning",
+		Name:        "Предупреждение о памяти",
+		Description: fmt.Sprintf("Использование RAM достигло более чем %d%%", thresholdPercent),
+		Condition:   "ram_usage_percent > %d",
+		Action:      "notification",
+		Severity:    "high",
+		Enabled:     true,
+		Metadata: map[string]interface{}{
+			"threshold":  thresholdPercent,
+			"check_type": "ram_usage",
+		},
+	}
+}
+
+// CreateQueueAlert - создание алерта для очереди
+func CreateQueueAlert(processID string, thresholdSize int) *Alert {
+	return &Alert{
+		ID:          fmt.Sprintf("queue_%s", processID),
+		Name:        fmt.Sprintf("Очередь процесса переполнилась: %s", processID),
+		Description: fmt.Sprintf("Размер очереди процесса %s достиг %d записей", processID, thresholdSize),
+		Condition:   "queue_size > %d",
+		Action:      "notification",
+		Severity:    "medium",
+		Enabled:     true,
+		Metadata: map[string]interface{}{
+			"process_id":  processID,
+			"threshold":   thresholdSize,
+			"check_type":  "queue_size",
+		},
+	}
+}
+
+// CreateErrorAlert - создание алерта для ошибок
+func CreateErrorAlert(name, description, condition string) *Alert {
+	return &Alert{
+		ID:          fmt.Sprintf("error_%s", generateAlertID()),
+		Name:        name,
+		Description: description,
+		Condition:   condition,
+		Action:      "notification",
+		Severity:    "critical",
+		Enabled:     true,
+		Metadata: map[string]interface{}{
+			"check_type": "error",
+		},
+	}
 }

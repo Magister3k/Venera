@@ -12,11 +12,12 @@
 // Использование:
 // import "venera/data"
 // selector := NewDataSelector(dragonflyDB, postgresDB)
-// selector.ProcessData("queue1", "sorted1")
+// selector.ProcessData(context.Background(), "queue1", "sorted1")
 
 package data
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -44,7 +45,8 @@ func NewDataSelector(dragonflyDB *DragonflyDB, postgresDB *PostgreSQL, filter *D
 }
 
 // ProcessData - обработка данных из DragonflyDB
-func (s *DataSelector) ProcessData(listKey, sortedSetKey string) error {
+// Добавляет контекст для контроля времени выполнения и возможности отмены
+func (s *DataSelector) ProcessData(ctx context.Context, listKey, sortedSetKey string) error {
 	s.log.Info("Начало обработки данных")
 
 	// Получение данных из list
@@ -246,6 +248,71 @@ func (s *DataSelector) ProcessListData(listKey string) error {
 	return nil
 }
 
+// ProcessListDataWithContext - обработка данных из list с контекстом
+func (s *DataSelector) ProcessListDataWithContext(ctx context.Context, listKey string) error {
+	s.log.Info("Начало обработки данных из list с контекстом")
+
+	// Получение данных из list
+	data, err := s.dragonflyDB.GetAndRemoveFromList(listKey, s.dragonflyDB.cfg.BatchSize)
+	if err != nil {
+		return fmt.Errorf("ошибка получения данных: %w", err)
+	}
+
+	if len(data) == 0 {
+		s.log.Info("Нет данных для обработки")
+		return nil
+	}
+
+	s.log.Infof("Получено %d записей из list", len(data))
+
+	// Подготовка данных для вставки
+	var batchData []BatchData
+	for _, record := range data {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			key, value, timestamp, err := ParseData(record)
+			if err != nil {
+				s.log.Warnf("Ошибка разбора данных: %v", err)
+				continue
+			}
+
+			// Проверка фильтрации ключей
+			if !s.filter.IsAllowed(key, value) {
+				s.log.Debugf("Запись отфильтрована: %s=%s", key, value)
+				continue
+			}
+
+			// Использование controls для получения источника
+			source := "default"
+			if sourceValue, exists := s.controls[key]; exists {
+				source = sourceValue
+			}
+
+			batchData = append(batchData, BatchData{
+				Source:    source,
+				Key:       key,
+				Value:     value,
+				Timestamp: timestamp,
+			})
+		}
+	}
+
+	if len(batchData) == 0 {
+		return nil
+	}
+
+	// Пакетная вставка в PostgreSQL
+	if err := s.postgresDB.InsertBatchDataWithContext(ctx, batchData); err != nil {
+		return fmt.Errorf("ошибка пакетной вставки: %w", err)
+	}
+
+	s.log.Infof("Успешно перемещено %d записей в PostgreSQL", len(batchData))
+
+	return nil
+}
+
 // GetListStatistics - получение статистики list
 func (s *DataSelector) GetListStatistics(listKey string) (int64, error) {
 	return s.dragonflyDB.GetListLength(listKey)
@@ -257,22 +324,25 @@ func (s *DataSelector) GetSortedSetStatistics(sortedSetKey string) (int64, error
 }
 
 // ProcessWithTimeout - обработка данных с таймаутом
-func (s *DataSelector) ProcessWithTimeout(listKey, sortedSetKey string, timeout time.Duration) error {
+func (s *DataSelector) ProcessWithTimeout(ctx context.Context, listKey, sortedSetKey string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	done := make(chan error, 1)
 
 	go func() {
-		done <- s.ProcessData(listKey, sortedSetKey)
+		done <- s.ProcessData(ctx, listKey, sortedSetKey)
 	}()
 
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(timeout):
-		return fmt.Errorf("превышено время ожидания обработки данных")
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
 // GetPostgresStatistics - получение статистики из PostgreSQL
-func (s *DataSelector) GetPostgresStatistics() (Statistics, error) {
-	return s.postgresDB.GetStatistics()
+func (s *DataSelector) GetPostgresStatistics(ctx context.Context) (Statistics, error) {
+	return s.postgresDB.GetStatisticsWithContext(ctx)
 }

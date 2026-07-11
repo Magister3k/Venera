@@ -36,12 +36,38 @@ type PostgreSQL struct {
 
 // PostgreSQLConfig - параметры подключения к PostgreSQL
 type PostgreSQLConfig struct {
-	Host         string
-	Port         int
-	Database     string
-	User         string
-	Password     string
+	Host           string
+	Port           int
+	Database       string
+	User           string
+	Password       string
 	MaxConnections int
+}
+
+// DataRecord - запись данных
+type DataRecord struct {
+	ID          int64  `json:"id"`
+	Source      string `json:"source"`
+	Key         string `json:"key"`
+	Value       string `json:"value"`
+	DateFirst   int64  `json:"date_first"`
+	DateLast    int64  `json:"date_last"`
+}
+
+// BatchData - пакет данных для вставки
+type BatchData struct {
+	Source    string
+	Key       string
+	Value     string
+	Timestamp int64
+}
+
+// Statistics - статистика данных
+type Statistics struct {
+	TotalCount  int64 `json:"total_count"`
+	SourceCount int64 `json:"source_count"`
+	KeyCount    int64 `json:"key_count"`
+	ValueCount  int64 `json:"value_count"`
 }
 
 // NewPostgreSQL - создание нового подключения к PostgreSQL
@@ -160,6 +186,49 @@ func (db *PostgreSQL) InsertBatchData(data []BatchData) error {
 	return nil
 }
 
+// InsertBatchDataWithContext - пакетная вставка данных с контекстом
+func (db *PostgreSQL) InsertBatchDataWithContext(ctx context.Context, data []BatchData) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// Создание транзакции
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("ошибка начала транзакции: %w", err)
+	}
+
+	defer func() {
+		if err != nil {
+			tx.Rollback(ctx)
+		}
+	}()
+
+	// Подготовка statement
+	stmt, err := tx.Prepare(ctx, "insert_data",
+		"INSERT INTO data (source, key, value, date_first, date_last) VALUES ($1, $2, $3, to_timestamp($4), to_timestamp($4)) ON CONFLICT (source, key, value) DO UPDATE SET date_last = to_timestamp($4)")
+	if err != nil {
+		return fmt.Errorf("ошибка подготовки statement: %w", err)
+	}
+
+	defer stmt.Close()
+
+	// Вставка данных
+	for _, item := range data {
+		_, err = stmt.Exec(ctx, item.Source, item.Key, item.Value, item.Timestamp)
+		if err != nil {
+			return fmt.Errorf("ошибка вставки данных: %w", err)
+		}
+	}
+
+	// Фиксация транзакции
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("ошибка фиксации транзакции: %w", err)
+	}
+
+	return nil
+}
+
 // GetDataBySource - получение данных по источнику
 func (db *PostgreSQL) GetDataBySource(source string, limit, offset int) ([]DataRecord, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -234,11 +303,20 @@ func (db *PostgreSQL) GetDataByFilter(source, key, value string, startDate, endD
 	return records, nil
 }
 
-// GetStatistics - получение статистики данных
+// GetStatistics - получение статистики данных (с таймаутом 30 секунд)
 func (db *PostgreSQL) GetStatistics() (Statistics, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	return db.getStatistics(ctx)
+}
 
+// GetStatisticsWithContext - получение статистики данных с контекстом
+func (db *PostgreSQL) GetStatisticsWithContext(ctx context.Context) (Statistics, error) {
+	return db.getStatistics(ctx)
+}
+
+// getStatistics - внутренняя функция получения статистики данных
+func (db *PostgreSQL) getStatistics(ctx context.Context) (Statistics, error) {
 	var stats Statistics
 
 	// Общее количество записей
@@ -280,6 +358,16 @@ func (db *PostgreSQL) GetDatabaseSize() (int64, error) {
 	}
 
 	return size, nil
+}
+
+// GetPool - получение пула соединений
+func (db *PostgreSQL) GetPool() *pgxpool.Pool {
+	return db.pool
+}
+
+// GetConfig - получение конфигурации подключения
+func (db *PostgreSQL) GetConfig() PostgreSQLConfig {
+	return db.cfg
 }
 
 // CreateDatabaseIfNotExists - создание базы данных, если она не существует
@@ -327,40 +415,4 @@ func (db *PostgreSQL) Close() error {
 		db.pool.Close()
 	}
 	return nil
-}"}
-
-// GetPool - получение пула соединений
-func (db *PostgreSQL) GetPool() *pgxpool.Pool {
-	return db.pool
-}
-
-// GetConfig - получение конфигурации подключения
-func (db *PostgreSQL) GetConfig() PostgreSQLConfig {
-	return db.cfg
-}
-
-// DataRecord - запись данных
-type DataRecord struct {
-	ID         int64  `json:"id"`
-	Source     string `json:"source"`
-	Key        string `json:"key"`
-	Value      string `json:"value"`
-	DateFirst  int64  `json:"date_first"`
-	DateLast   int64  `json:"date_last"`
-}
-
-// BatchData - пакет данных для вставки
-type BatchData struct {
-	Source    string
-	Key       string
-	Value     string
-	Timestamp int64
-}
-
-// Statistics - статистика данных
-type Statistics struct {
-	TotalCount int64 `json:"total_count"`
-	SourceCount int64 `json:"source_count"`
-	KeyCount   int64 `json:"key_count"`
-	ValueCount int64 `json:"value_count"`
 }

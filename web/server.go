@@ -18,20 +18,9 @@
 
 package web
 
-import (
-	"context"
-	"fmt"
-	"net/http"
-	"os"
-	"path/filepath"
-	"time"
-
-	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
-	"venera/config"
-	"venera/data"
-	"venera/processes"
-)
+{
+  "text": "import (\n\t\"context\"\n\t\"fmt\"\n\t\"net/http\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"time\"\n\n\t\"github.com/gin-gonic/gin\"\n\t\"github.com/sirupsen/logrus\"\n\t\"venera/config\"\n\t\"venera/data\"\n\t\"venera/metrics\"\n\t\"venera/processes\"\n)"
+}
 
 // Server - структура веб-сервера
 type Server struct {

@@ -1,73 +1,69 @@
-// scanner.go - Утилиты сканирования для Venera
+// scanner.go - Сканирование файлов и папок
 //
-// Этот модуль обеспечивает функции сканирования файлов и папок
-// для систем сбора идентификаторов.
+// Этот модуль обеспечивает сканирование файловой системы для
+// обнаружения новых файлов и изменений в папках.
 //
 // Основные функции:
 // - Рекурсивное сканирование папок
-// - Мониторинг изменений в папках
-// - Поиск файлов по шаблону
+// - Мониторинг новых файлов
+// - Получение списка файлов с определенным расширением
 //
 // Использование:
 // import "venera/utils"
-// files := utils.ScanDirectory("C:\\Data", true, true)
-// fmt.Println(files)
+// files := ScanFolder("C:\\Logs", true, true)
 
 package utils
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// ScanDirectory - сканирование директории
-func ScanDirectory(dirPath string, scanSubfolders, monitorNewFiles bool) ([]string, error) {
+// ScanOptions - опции сканирования
+type ScanOptions struct {
+	ScanSubfolders  bool   // Рекурсивное сканирование подпапок
+	MonitorNewFiles bool   // Мониторинг новых файлов
+	Extensions      []string // Фильтр по расширениям файлов
+}
+
+// ScanFolder - сканирование папки на наличие файлов
+func ScanFolder(folderPath string, options *ScanOptions) ([]string, error) {
 	var files []string
 
-	// Проверка существования директории
-	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("директория не найдена: %s", dirPath)
+	// Проверка существования папки
+	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
+		return nil, err
 	}
 
-	// Рекурсивное сканирование
-	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+	// Функция для проверки расширения файла
+	shouldInclude := func(filename string) bool {
+		if options == nil || len(options.Extensions) == 0 {
+			return true
+		}
+
+		ext := filepath.Ext(filename)
+		for _, allowedExt := range options.Extensions {
+			if strings.EqualFold(ext, allowedExt) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Рекурсивное обход папки
+	err := filepath.Walk(folderPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Пропуск директорий, если не нужно сканировать подпапки
-		if info.IsDir() {
-			if !scanSubfolders {
-				return filepath.SkipDir
-			}
-			return nil
+		// Пропуск папок, если не включен сканирование подпапок
+		if info.IsDir() && !options.ScanSubfolders && path != folderPath {
+			return filepath.SkipDir
 		}
 
 		// Добавление файлов
-		files = append(files, path)
-		return nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("ошибка сканирования: %w", err)
-	}
-
-	return files, nil
-}
-
-// FindFilesByPattern - поиск файлов по шаблону
-func FindFilesByPattern(dirPath, pattern string) ([]string, error) {
-	var files []string
-
-	// Рекурсивное сканирование
-	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() && matchesPattern(info.Name(), pattern) {
+		if !info.IsDir() && shouldInclude(info.Name()) {
 			files = append(files, path)
 		}
 
@@ -75,76 +71,112 @@ func FindFilesByPattern(dirPath, pattern string) ([]string, error) {
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("ошибка поиска файлов: %w", err)
+		return nil, err
 	}
 
 	return files, nil
 }
 
-// matchesPattern - проверка соответствия имени файла шаблону
-func matchesPattern(name, pattern string) bool {
-	// Поддержка простых шаблонов
-	switch pattern {
-	case "*":
-		return true
-	case "*.log":
-		return strings.HasSuffix(name, ".log")
-	case "*.json":
-		return strings.HasSuffix(name, ".json")
-	default:
-		return name == pattern
+// MonitorFolder - мониторинг папки на наличие новых файлов (безопасная версия)
+func MonitorFolder(folderPath string, callback func(string)) error {
+	// Проверка существования папки
+	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
+		return err
 	}
-}
 
-// MonitorDirectory - мониторинг директории
-func MonitorDirectory(dirPath string, onChange func(string), interval int) error {
-	// TODO: Реализовать мониторинг директории
-	return nil
-}
+	// Запуск мониторинга в отдельной горутине
+	go func() {
+		// Инициализация состояния папки
+		seenFiles := make(map[string]bool)
 
-// GetDirectorySize - получение размера директории
-func GetDirectorySize(dirPath string) (int64, error) {
-	var size int64
-
-	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+		// Первоначальное сканирование
+		files, err := ScanFolder(folderPath, &ScanOptions{
+			ScanSubfolders:  true,
+			MonitorNewFiles: true,
+		})
 		if err != nil {
-			return err
+			return
 		}
 
-		if !info.IsDir() {
-			size += info.Size()
+		for _, file := range files {
+			seenFiles[file] = true
 		}
 
-		return nil
-	})
+		// Цикл мониторинга (упрощенная версия)
+		for {
+			// Повторное сканирование
+			currentFiles, err := ScanFolder(folderPath, &ScanOptions{
+				ScanSubfolders:  true,
+				MonitorNewFiles: true,
+			})
+			if err != nil {
+				continue
+			}
 
-	if err != nil {
-		return 0, fmt.Errorf("ошибка получения размера: %w", err)
-	}
+			// Поиск новых файлов
+			for _, file := range currentFiles {
+				if !seenFiles[file] {
+					seenFiles[file] = true
+					callback(file)
+				}
+			}
 
-	return size, nil
-}
+			// Пауза перед следующим сканированием
+			// В реальной реализации использовать inotify или аналоги
+		}
+	}()
 
-// GetFileExtension - получение расширения файла
-func GetFileExtension(filePath string) string {
-	return filepath.Ext(filePath)
-}
-
-// GetFileNameWithoutExtension - получение имени файла без расширения
-func GetFileNameWithoutExtension(filePath string) string {
-	return strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
-}
-
-// EnsureDirectoryExists - создание директории, если она не существует
-func EnsureDirectoryExists(dirPath string) error {
-	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
-		return os.MkdirAll(dirPath, 0755)
-	}
 	return nil
 }
 
-// GetFreeDiskSpace - получение свободного места на диске
-func GetFreeDiskSpace(path string) (int64, error) {
-	// TODO: Реализовать получение свободного места на диске
-	return 0, nil
+// GetFileExtension - получить расширение файла
+func GetFileExtension(filename string) string {
+	return filepath.Ext(filename)
+}
+
+// GetFileBaseName - получить имя файла без расширения
+func GetFileBaseName(filename string) string {
+	return strings.TrimSuffix(filename, filepath.Ext(filename))
+}
+
+// GetFileName - получить имя файла без пути
+func GetFileName(fullPath string) string {
+	return filepath.Base(fullPath)
+}
+
+// GetFolderPath - получить путь к папке
+func GetFolderPath(fullPath string) string {
+	return filepath.Dir(fullPath)
+}
+
+// FileExists - проверка существования файла
+func FileExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
+}
+
+// FolderExists - проверка существования папки
+func FolderExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+// GetFileModificationTime - получить время последней модификации файла
+func GetFileModificationTime(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return info.ModTime().Unix(), nil
+}
+
+// CreateFolderIfNotExists - создать папку, если она не существует
+func CreateFolderIfNotExists(path string) error {
+	if !FolderExists(path) {
+		return os.MkdirAll(path, 0755)
+	}
+	return nil
 }

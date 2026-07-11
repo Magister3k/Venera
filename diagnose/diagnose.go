@@ -23,13 +23,16 @@ package diagnose
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/windows"
@@ -134,7 +137,20 @@ func (d *Diagnose) checkConfig() error {
 
 // checkRegistration - проверка регистрации
 func (d *Diagnose) checkRegistration() error {
-	// TODO: Реализовать проверку регистрации
+	// Проверка наличия файла манифеста
+	if _, err := os.Stat("manifest.xml"); os.IsNotExist(err) {
+		return fmt.Errorf("файл manifest.xml не найден")
+	}
+
+	// Проверка регистрации манифеста через Windows Registry
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SYSTEM\CurrentControlSet\Services\EventLog\Application\Venera`,
+		registry.READ)
+	if err != nil {
+		return fmt.Errorf("ошибка проверки регистрации: %w", err)
+	}
+	defer key.Close()
+
 	return nil
 }
 
@@ -175,10 +191,21 @@ func (d *Diagnose) checkRAM() error {
 func (d *Diagnose) checkDisk() error {
 	// Проверка диска с базой PostgreSQL
 	diskPath := "C:\\"
-	if info, err := os.Stat(diskPath); err == nil {
-		diskFree := info.Sys().(*windows.Win32FileAttributeData)
-		// TODO: Реализовать получение информации о диске
+	var freeBytesAvailable uint64
+	var totalBytes uint64
+	var totalFreeBytes uint64
+
+	err := windows.GetDiskFreeSpaceEx(syscall.StringToUTF16Ptr(diskPath),
+		&freeBytesAvailable, &totalBytes, &totalFreeBytes)
+	if err != nil {
+		return fmt.Errorf("ошибка получения информации о диске: %w", err)
 	}
+
+	diskTotalGB := float64(totalBytes) / (1024 * 1024 * 1024)
+	diskFreeGB := float64(totalFreeBytes) / (1024 * 1024 * 1024)
+	diskUsagePercent := (1 - diskFreeGB/diskTotalGB) * 100
+
+	d.log.Infof("Disk C:\\: %.2f GB всего, %.2f GB свободно, %.2f%% использовано", diskTotalGB, diskFreeGB, diskUsagePercent)
 
 	return nil
 }
@@ -197,7 +224,18 @@ func (d *Diagnose) checkNetworkInterfaces() error {
 	interfaces := out.String()
 	d.log.Info("Сетевые интерфейсы получены")
 
-	// TODO: Парсинг и форматирование вывода
+	// Парсинг и форматирование вывода
+	lines := strings.Split(interfaces, "\n")
+	var formattedLines []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			formattedLines = append(formattedLines, line)
+		}
+	}
+
+	d.log.Infof("Найдено %d строк с информацией о сетевых интерфейсах", len(formattedLines))
+
 	return nil
 }
 
@@ -243,13 +281,41 @@ func (d *Diagnose) checkPodman() error {
 
 // checkDragonflyImage - проверка образа DragonflyDB
 func (d *Diagnose) checkDragonflyImage() error {
-	// TODO: Реализовать проверку образа DragonflyDB через podman
+	// Проверка образа через podman images
+	cmd := exec.Command(d.cfg.Paths.PodmanPath, "images", d.cfg.Paths.DragonflyImage)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ошибка проверки образа DragonflyDB: %w", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, d.cfg.Paths.DragonflyImage) {
+		return fmt.Errorf("образ DragonflyDB не найден: %s", d.cfg.Paths.DragonflyImage)
+	}
+
+	d.log.Info("Образ DragonflyDB найден")
 	return nil
 }
 
 // checkDragonflyContainer - проверка контейнера DragonflyDB
 func (d *Diagnose) checkDragonflyContainer() error {
-	// TODO: Реализовать проверку контейнера DragonflyDB через podman
+	// Проверка контейнера через podman ps -a
+	cmd := exec.Command(d.cfg.Paths.PodmanPath, "ps", "-a", "--filter", "name=cachedb", "--format", "{{.Names}}")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ошибка проверки контейнера DragonflyDB: %w", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "cachedb") {
+		return fmt.Errorf("контейнер cachedb не найден")
+	}
+
+	d.log.Info("Контейнер cachedb найден")
 	return nil
 }
 
@@ -300,7 +366,19 @@ func (d *Diagnose) checkService() error {
 
 // checkEventLog - проверка Event Log
 func (d *Diagnose) checkEventLog() error {
-	// TODO: Реализовать проверку Event Log
+	// Проверка наличия логов через PowerShell
+	cmd := exec.Command("powershell", "-Command",
+		"Get-EventLog -LogName Application -EntryType Error -Newest 10 | Format-List")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ошибка получения событий Event Log: %w", err)
+	}
+
+	output := out.String()
+	d.log.Infof("Получено %d строк из Event Log", len(strings.Split(output, "\n")))
+
 	return nil
 }
 
@@ -339,15 +417,16 @@ func (d *Diagnose) ExportReport(filePath string) error {
 
 // CreateArchive - создание архива с логами и отчетом
 func (d *Diagnose) CreateArchive(archivePath string) error {
-	// TODO: Реализовать создание архива
+	// Создание архива через PowerShell
+	cmd := exec.Command("powershell", "-Command",
+		"Compress-Archive -Path 'Logs\\*,config.toml' -DestinationPath '"+archivePath+"' -Force")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ошибка создания архива: %w", err)
+	}
+
+	d.log.Infof("Архив создан: %s", archivePath)
 	return nil
 }
-
-// unsafe - импорт unsafe
-import "unsafe"
-
-// context - импорт context
-import "context"
-
-// syscall - импорт syscall
-import "syscall"

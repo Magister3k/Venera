@@ -1,0 +1,24 @@
+warning: in the working copy of 'processes/tshark.go', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/processes/tshark.go b/processes/tshark.go[m
+[1mindex 90bcb5f..8a29602 100644[m
+[1m--- a/processes/tshark.go[m
+[1m+++ b/processes/tshark.go[m
+[36m@@ -30,16 +30,8 @@[m [mimport ([m
+ 	"github.com/sirupsen/logrus"[m
+ )[m
+ [m
+[31m-// Tshark - структура управления Tshark[m
+[31m-type Tshark struct {[m
+[31m-	cfg        TsharkConfig[m
+[31m-	cmd        *exec.Cmd[m
+[31m-	ctx        context.Context[m
+[31m-	cancel     context.CancelFunc[m
+[31m-	outputChan chan string[m
+[31m-	errorChan  chan error[m
+[31m-	wg         sync.WaitGroup[m
+[31m-	log        *logrus.Logger[m
+[32m+[m[32m{[m
+[32m+[m[32m  "text": "// Tshark - структура управления Tshark\ntype Tshark struct {\n\tcfg         TsharkConfig\n\tcmd         *exec.Cmd\n\tctx         context.Context\n\tcancel      context.CancelFunc\n\toutputChan  chan string\n\terrorChan   chan error\n\twg          sync.WaitGroup\n\tlog         *logrus.Logger\n\tstdoutPipe  io.ReadCloser // Сохраняем pipe для корректного закрытия\n\tstderrPipe  io.ReadCloser // Сохраняем pipe для корректного закрытия\n}"[m
+ }[m
+ [m
+ // TsharkConfig - конфигурация Tshark[m

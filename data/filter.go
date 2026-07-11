@@ -8,6 +8,7 @@
 // - Загрузка фильтров из файла generic.flt
 // - Проверка ключей и значений на соответствие фильтрам
 // - Многоуровневая фильтрация (ключ-значение)
+// - Потокобезопасность через sync.RWMutex
 //
 // Формат файла фильтрации:
 //   +ключ_|_название_  - белый список ключей (1-й уровень)
@@ -19,6 +20,10 @@
 // if filter.IsAllowed(key, value) {
 //     // Обработка данных
 // }
+//
+// ВНИМАНИЕ: Все методы модуля потокобезопасны благодаря RWMutex.
+// Операции чтения (IsAllowed, IsKeyAllowed) используют RLock/RUnlock.
+// Операции записи (LoadFromFile) используют Lock/Unlock.
 
 package data
 
@@ -26,15 +31,19 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 )
 
 // DataFilter - структура фильтрации данных
+// Потокобезопасная реализация с использованием sync.RWMutex
 type DataFilter struct {
-	Whitelist map[string][]string // Белый список: ключ -> [значения]
-	Blacklist map[string][]string // Черный список: ключ -> [значения]
+	mu        sync.RWMutex          // Мьютекс для синхронизации доступа
+	Whitelist map[string][]string   // Белый список: ключ -> [значения]
+	Blacklist map[string][]string   // Черный список: ключ -> [значения]
 }
 
 // NewDataFilter - создание нового фильтра из файла
+// Возвращает пустой фильтр, если файл не найден
 func NewDataFilter(filePath string) (*DataFilter, error) {
 	filter := &DataFilter{
 		Whitelist: make(map[string][]string),
@@ -55,7 +64,11 @@ func NewDataFilter(filePath string) (*DataFilter, error) {
 }
 
 // LoadFromFile - загрузка фильтров из файла
+// Потокобезопасная операция записи
 func (f *DataFilter) LoadFromFile(filePath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("ошибка открытия файла фильтрации: %w", err)
@@ -95,7 +108,7 @@ func (f *DataFilter) LoadFromFile(filePath string) error {
 				// Черный список значений
 				value := strings.TrimSpace(line[1:])
 				if currentKey != "" {
-					f.Whitelist[currentKey] = append(f.Whitelist[currentKey], value)
+					f.Blacklist[currentKey] = append(f.Blacklist[currentKey], value)
 				}
 			}
 		}
@@ -105,7 +118,11 @@ func (f *DataFilter) LoadFromFile(filePath string) error {
 }
 
 // IsAllowed - проверка, разрешено ли значение для данного ключа
+// Потокобезопасная операция чтения
 func (f *DataFilter) IsAllowed(key, value string) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
 	// Если белый список пуст, разрешаем все
 	if len(f.Whitelist) == 0 {
 		return true
@@ -135,7 +152,11 @@ func (f *DataFilter) IsAllowed(key, value string) bool {
 }
 
 // IsKeyAllowed - проверка, разрешен ли ключ
+// Потокобезопасная операция чтения
 func (f *DataFilter) IsKeyAllowed(key string) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
 	// Если белый список пуст, разрешаем все
 	if len(f.Whitelist) == 0 {
 		return true
@@ -146,12 +167,30 @@ func (f *DataFilter) IsKeyAllowed(key string) bool {
 	return exists
 }
 
-// GetWhitelist - получение белого списка
+// GetWhitelist - получение белого списка (копия для безопасности)
+// Возвращает копию карты для предотвращения гонок при чтении
 func (f *DataFilter) GetWhitelist() map[string][]string {
-	return f.Whitelist
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	// Создание копии для безопасности
+	whitelistCopy := make(map[string][]string, len(f.Whitelist))
+	for k, v := range f.Whitelist {
+		whitelistCopy[k] = append([]string{}, v...)
+	}
+	return whitelistCopy
 }
 
-// GetBlacklist - получение черного списка
+// GetBlacklist - получение черного списка (копия для безопасности)
+// Возвращает копию карты для предотвращения гонок при чтении
 func (f *DataFilter) GetBlacklist() map[string][]string {
-	return f.Blacklist
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	// Создание копии для безопасности
+	blacklistCopy := make(map[string][]string, len(f.Blacklist))
+	for k, v := range f.Blacklist {
+		blacklistCopy[k] = append([]string{}, v...)
+	}
+	return blacklistCopy
 }

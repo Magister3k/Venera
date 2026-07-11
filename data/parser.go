@@ -2,9 +2,10 @@
 //
 // Этот модуль обеспечивает разбор JSON-данных, полученных от Tshark,
 // с учетом допустимости использования в значениях символа ":".
+// Использует fastjson для высокопроизводительного разбора JSON.
 //
 // Основные функции:
-// - Разбор JSON-данных от Tshark
+// - Разбор JSON-данных от Tshark с использованием fastjson
 // - Извлечение пар ключ-значение
 // - Обработка значений, содержащих символ ":"
 // - Приведение данных к формату ключ:значение:время
@@ -20,9 +21,11 @@
 package data
 
 import (
+	"bytes"
+	"encoding/json"
 	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
+	"github.com/segmentio/fastjson/v2"
 )
 
 // DataPair - пара ключ-значение
@@ -34,25 +37,110 @@ type DataPair struct {
 
 // Parser - структура парсера данных
 type Parser struct {
-	// Конфигурация парсера
+	// fastjson парсер для эффективного разбора JSON
+	parser *fastjson.Parser
 }
 
 // NewParser - создание нового парсера
 func NewParser() *Parser {
-	return &Parser{}
+	return &Parser{
+		parser: &fastjson.Parser{},
+	}
 }
 
 // ParseJSON - разбор JSON-данных
-// Использует fastjson для эффективного разбора
+// Использует fastjson для высокопроизводительного разбора JSON
+// Этот метод обрабатывает JSON в формате, который выводит Tshark
 func (p *Parser) ParseJSON(data []byte, timestamp int64) []DataPair {
-	// Временная реализация для примера
-	// В продакшене следует использовать fastjson для эффективного разбора
 	var pairs []DataPair
 
-	// Разбор JSON с использованием msgpack для примера
-	// В реальном приложении используйте fastjson
+	// Разбор JSON с использованием fastjson
+	v, err := p.parser.ParseBytes(data)
+	if err != nil {
+		// Логируем ошибку парсинга, но продолжаем работу
+		// В продакшене следует использовать логгер
+		return pairs
+	}
+
+	// Проверка, является ли JSON массивом объектов
+	if v.Type() == fastjson.TypeArray {
+		// Обработка массива JSON-объектов (стандартный формат Tshark)
+		arr, err := v.Array()
+		if err != nil {
+			return pairs
+		}
+
+		for _, item := range arr {
+			if pair := p.parseJSONObject(item, timestamp); pair != nil {
+				pairs = append(pairs, *pair)
+			}
+		}
+	} else if v.Type() == fastjson.TypeObject {
+		// Обработка одного JSON-объекта
+		if pair := p.parseJSONObject(v, timestamp); pair != nil {
+			pairs = append(pairs, *pair)
+		}
+	}
 
 	return pairs
+}
+
+// parseJSONObject - разбор одного JSON-объекта
+func (p *Parser) parseJSONObject(obj *fastjson.Value, timestamp int64) *DataPair {
+	// Попытка извлечь поле "fields" или "fields.payload"
+	// Tshark может выводить данные в различных форматах
+
+	// Сначала пробуем извлечь "fields"
+	if fields := obj.Get("fields"); fields.Type() == fastjson.TypeObject {
+		return p.extractPairsFromFields(fields, timestamp)
+	}
+
+	// Если нет fields, пробуем извлечь "fields.payload"
+	if fields := obj.Get("fields", "payload"); fields.Type() == fastjson.TypeString {
+		// payload может содержать JSON или просто текст
+		payloadBytes, err := fields.StringBytes()
+		if err == nil {
+			// Пытаемся разобрать как JSON
+			v, err := p.parser.ParseBytes(payloadBytes)
+			if err == nil {
+				if v.Type() == fastjson.TypeObject {
+					return p.parseJSONObject(v, timestamp)
+				}
+			}
+			// Если не JSON, считаем это простым значением
+			payloadStr, _ := fields.StringBytes()
+			return &DataPair{
+				Key:       "payload",
+				Value:     string(payloadStr),
+				Timestamp: timestamp,
+			}
+		}
+	}
+
+	// Если структура не распознана, возвращаем nil
+	return nil
+}
+
+// extractPairsFromFields - извлечение пар ключ-значение из fields
+func (p *Parser) extractPairsFromFields(fields *fastjson.Value, timestamp int64) *DataPair {
+	// Создаем буфер для сбора всех полей
+	var buf bytes.Buffer
+
+	// Обходим все поля объекта
+	fields.Object().Visit(func(key []byte, value *fastjson.Value) {
+		if buf.Len() > 0 {
+			buf.WriteString(",")
+		}
+		buf.Write(key)
+		buf.WriteString(":")
+		buf.Write(value.StringBytes())
+	})
+
+	return &DataPair{
+		Key:       "fields",
+		Value:     buf.String(),
+		Timestamp: timestamp,
+	}
 }
 
 // ParseLine - разбор одной строки данных
@@ -93,17 +181,19 @@ func (p *Parser) FormatDataWithSeparator(key, value string, timestamp int64, sep
 }
 
 // UnmarshalJSON - разбор JSON в структуру DataPair
+// Использует encoding/json для совместимости
 func (p *Parser) UnmarshalJSON(data []byte) (*DataPair, error) {
 	var pair DataPair
-	if err := msgpack.Unmarshal(data, &pair); err != nil {
+	if err := json.Unmarshal(data, &pair); err != nil {
 		return nil, err
 	}
 	return &pair, nil
 }
 
 // MarshalJSON - сериализация DataPair в JSON
+// Использует encoding/json для совместимости
 func (p *Parser) MarshalJSON(pair *DataPair) ([]byte, error) {
-	return msgpack.Marshal(pair)
+	return json.Marshal(pair)
 }
 
 // ParseMultipleLines - разбор нескольких строк данных

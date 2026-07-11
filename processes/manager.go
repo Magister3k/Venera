@@ -32,7 +32,7 @@ import (
 	"venera/data"
 	"venera/models"
 	"venera/logging"
-)"}
+)
 
 // ProcessManager - менеджер процессов
 type ProcessManager struct {
@@ -63,11 +63,11 @@ type ProcessWrapper struct {
 
 // ProcessQueue - очередь процесса
 type ProcessQueue struct {
-	ListKey       string
-	SortedSetKey  string
-	BatchSize     int
-	Timeout       time.Duration
-	Processor     *DataProcessor
+	ListKey      string
+	SortedSetKey string
+	BatchSize    int
+	Timeout      time.Duration
+	Processor    *DataProcessor
 }
 
 // DataProcessor - обработчик данных
@@ -125,14 +125,14 @@ func (m *ProcessManager) AddProcess(id string, cfg config.ProcessConfig) error {
 
 	// Создание обработчика данных
 	processor := &DataProcessor{
-		ListKey:     queue.ListKey,
+		ListKey:      queue.ListKey,
 		SortedSetKey: queue.SortedSetKey,
-		DragonflyDB: m.dragonflyDB,
-		PostgreSQL:  m.postgresDB,
-		DataFilter:  m.dataFilter,
-		Controls:    m.controls,
-		BatchSize:   m.config.DragonflyDB.BatchSize,
-		Timeout:     queue.Timeout,
+		DragonflyDB:  m.dragonflyDB,
+		PostgreSQL:   m.postgresDB,
+		DataFilter:   m.dataFilter,
+		Controls:     m.controls,
+		BatchSize:    m.config.DragonflyDB.BatchSize,
+		Timeout:      queue.Timeout,
 	}
 
 	queue.Processor = processor
@@ -148,13 +148,13 @@ func (m *ProcessManager) AddProcess(id string, cfg config.ProcessConfig) error {
 
 	// Создание обертки процесса
 	wrapper := &ProcessWrapper{
-		ID:          id,
-		Config:      cfg,
-		Tshark:      tshark,
+		ID:           id,
+		Config:       cfg,
+		Tshark:       tshark,
 		DataSelector: data.NewDataSelector(m.dragonflyDB, m.postgresDB, m.dataFilter, m.controls),
-		Queue:       queue,
-		StartTime:   time.Now().Unix(),
-		Stopped:     false,
+		Queue:        queue,
+		StartTime:    time.Now().Unix(),
+		Stopped:      false,
 	}
 
 	m.processes[id] = wrapper
@@ -339,6 +339,54 @@ func (m *ProcessManager) GetProcessCount() int {
 	defer m.mu.Unlock()
 
 	return len(m.processes)
+}
+
+// GetProcessMetrics - получение метрик всех процессов
+func (m *ProcessManager) GetProcessMetrics() map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	metrics := make(map[string]interface{})
+	for id, wrapper := range m.processes {
+		metrics[id] = map[string]interface{}{
+			"status":      "stopped",
+			"startTime":   wrapper.StartTime,
+			"config":      wrapper.Config,
+			"queueList":   wrapper.Queue.ListKey,
+			"queueSorted": wrapper.Queue.SortedSetKey,
+		}
+		if !wrapper.Stopped {
+			metrics[id].(map[string]interface{})["status"] = "running"
+		}
+	}
+	return metrics
+}
+
+// GetProcessesList - получение списка конфигураций процессов
+func (m *ProcessManager) GetProcessesList() []config.ProcessConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	configs := make([]config.ProcessConfig, 0, len(m.processes))
+	for _, wrapper := range m.processes {
+		configs = append(configs, wrapper.Config)
+	}
+	return configs
+}
+
+// GetProcessStatus - получение статуса процесса по ID
+func (m *ProcessManager) GetProcessStatus(processID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	wrapper, exists := m.processes[processID]
+	if !exists {
+		return "error"
+	}
+	if wrapper.Stopped {
+		return "stopped"
+	}
+	return "running"
 }
 
 // Shutdown - корректное завершение работы менеджера

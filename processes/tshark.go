@@ -8,6 +8,7 @@
 // - Обработка потоков данных из Tshark
 // - Поддержка разных типов источников (сетевой, папка, файл)
 // - Обработка ошибок Tshark
+// - Корректное управление дескрипторами (stdin/stdout/stderr)
 //
 // Использование:
 // import "venera/processes"
@@ -19,11 +20,10 @@ package processes
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,30 +32,31 @@ import (
 
 // Tshark - структура управления Tshark
 type Tshark struct {
-	cfg        TsharkConfig
-	cmd        *exec.Cmd
-	ctx        context.Context
-	cancel     context.CancelFunc
-	outputChan chan string
-	errorChan  chan error
-	wg         sync.WaitGroup
-	log        *logrus.Logger
+	cfg         TsharkConfig
+	cmd         *exec.Cmd
+	ctx         context.Context
+	cancel      context.CancelFunc
+	outputChan  chan string
+	errorChan   chan error
+	wg          sync.WaitGroup
+	log         *logrus.Logger
+	stdoutPipe  io.ReadCloser // Сохраняем pipe для корректного закрытия
+	stderrPipe  io.ReadCloser // Сохраняем pipe для корректного закрытия
 }
 
 // TsharkConfig - конфигурация Tshark
 type TsharkConfig struct {
-	Path   string
-	Type   string // "network", "folder", "file"
-	IP     string
-	Port   int
+	Path      string
+	Type      string // "network", "folder", "file"
+	IP        string
+	Port      int
 	PathInput string
-	Filter string
+	Filter    string
 }
 
 // NewTshark - создание нового экземпляра Tshark
 func NewTshark(cfg TsharkConfig) *Tshark {
 	return &Tshark{
-		cfg:        cfg,
 		outputChan: make(chan string, 1000),
 		errorChan:  make(chan error, 10),
 		log:        logrus.WithField("module", "tshark"),
@@ -84,11 +85,13 @@ func (t *Tshark) Start() error {
 	if err != nil {
 		return fmt.Errorf("ошибка создания pipe для stdout: %w", err)
 	}
+	t.stdoutPipe = stdout // Сохраняем pipe для корректного закрытия
 
 	stderr, err := t.cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("ошибка создания pipe для stderr: %w", err)
 	}
+	t.stderrPipe = stderr // Сохраняем pipe для корректного закрытия
 
 	// Запуск команды
 	if err := t.cmd.Start(); err != nil {
@@ -105,18 +108,42 @@ func (t *Tshark) Start() error {
 }
 
 // Stop - остановка Tshark
+//
+// Корректное управление ресурсами:
+// 1. Отмена контекста приводит к завершению всех горутин через ctx.Done()
+// 2. defer reader.Close() в горутинах гарантирует закрытие pipe'ов
+// 3. Закрытие каналов outputChan/errorChan после завершения горутин
 func (t *Tshark) Stop() error {
 	t.log.Info("Остановка Tshark")
 
-	// Отмена контекста
+	// Отмена контекста - горутины readOutput/readError завершатся через ctx.Done()
 	if t.cancel != nil {
 		t.cancel()
 	}
 
-	// Ожидание завершения
-	t.wg.Wait()
+	// Ожидание завершения горутин
+	// defer reader.Close() в горутинах закроет pipe'ы автоматически
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
 
-	// Закрытие каналов
+	// Таймаут ожидания (5 секунд)
+	select {
+	case <-done:
+		t.log.Info("Горутины Tshark успешно завершены")
+	case <-time.After(5 * time.Second):
+		t.log.Warn("Превышено время ожидания завершения Tshark, принудительная остановка")
+		if t.cmd != nil && t.cmd.Process != nil {
+			t.cmd.Process.Kill()
+			t.log.Info("Процесс Tshark принудительно завершен")
+		}
+		// Ждем завершения горутин после Kill
+		t.wg.Wait()
+	}
+
+	// Закрытие каналов после завершения горутин
 	close(t.outputChan)
 	close(t.errorChan)
 
@@ -158,8 +185,9 @@ func (t *Tshark) buildArgs() []string {
 }
 
 // readOutput - чтение стандартного вывода
-func (t *Tshark) readOutput(reader *bytes.Buffer) {
+func (t *Tshark) readOutput(reader io.ReadCloser) {
 	defer t.wg.Done()
+	defer reader.Close()
 
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -181,9 +209,10 @@ func (t *Tshark) readOutput(reader *bytes.Buffer) {
 	}
 }
 
-// readError - чтение стандартного ошибок
-func (t *Tshark) readError(reader *bytes.Buffer) {
+// readError - чтение стандартного вывода ошибок
+func (t *Tshark) readError(reader io.ReadCloser) {
 	defer t.wg.Done()
+	defer reader.Close()
 
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {

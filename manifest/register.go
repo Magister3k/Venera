@@ -286,9 +286,3 @@ func GetManifest() (*Manifest, error) {
 
 	return &manifest, nil
 }
-
-// unsafe - импорт unsafe
-import "unsafe"
-
-// syscall - импорт syscall
-import "syscall"

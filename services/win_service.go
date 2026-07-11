@@ -22,12 +22,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+	"syscall"
 )
 
 // Service - структура службы
@@ -38,6 +38,9 @@ type Service struct {
 	AutoStart   bool
 	Description string
 }
+
+// Global service handle - дескриптор службы для управления статусом
+var hStatusHandle windows.Handle
 
 // InstallService - установка службы
 func InstallService(name, path string) error {
@@ -57,7 +60,7 @@ func InstallService(name, path string) error {
 		"start=", "auto",
 		"obj=", "LocalSystem",
 		"depend=", "TCP/IP",
-		" DisplayName=", "Venera Service")
+		"DisplayName=", "Venera Service")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -209,7 +212,7 @@ func setServiceDescription(name, description string) error {
 	return nil
 }
 
-// RunService - запуск службы
+// RunService - запуск службы Windows
 func RunService(name string, handler func()) error {
 	// Создание обработчика службы
 	serviceHandler := &ServiceHandler{
@@ -284,13 +287,13 @@ func (h *ServiceHandler) serviceControlHandler(control uint32) (result uint32) {
 func (h *ServiceHandler) setServiceStatus(state, win32ExitCode, checkPoint uint32) {
 	if hStatusHandle != 0 {
 		status := windows.SERVICE_STATUS{
-			ServiceType:        windows.SERVICE_WIN32_OWN_PROCESS,
-		(CurrentState:     state,
-			ControlsAccepted: windows.SERVICE_ACCEPT_STOP | windows.SERVICE_ACCEPT_SHUTDOWN,
-			Win32ExitCode:    win32ExitCode,
-			ServiceSpecificExitCode: 0,
-			CheckPoint:       checkPoint,
-			WaitHint:         3000,
+			ServiceType:               windows.SERVICE_WIN32_OWN_PROCESS,
+			CurrentState:              state,
+			ControlsAccepted:          windows.SERVICE_ACCEPT_STOP | windows.SERVICE_ACCEPT_SHUTDOWN,
+			Win32ExitCode:             win32ExitCode,
+			ServiceSpecificExitCode:   0,
+			CheckPoint:                checkPoint,
+			WaitHint:                  3000,
 		}
 		windows.SetServiceStatus(hStatusHandle, &status)
 	}
@@ -318,8 +321,48 @@ func isAdmin() bool {
 	return elevation.TokenIsElevated > 0
 }
 
-// unsafe - импорт unsafe
-import "unsafe"
+// ShowNotification - показать уведомление в системном трее
+func ShowNotification(title, message string) {
+	// Для Windows используем Notifikasi API
+	// В упрощённой версии просто выводим сообщение
+	fmt.Printf("Уведомление: %s - %s\n", title, message)
+}
 
-// hStatusHandle - дескриптор службы
-var hStatusHandle windows.Handle
+// GetExecutablePath - получить путь к исполняемому файлу
+func GetExecutablePath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exePath
+}
+
+// OpenURL - открыть URL в браузере по умолчанию
+func OpenURL(url string) error {
+	// Для Windows используем cmd
+	cmd := exec.Command("cmd", "/c", "start", url)
+	return cmd.Run()
+}
+
+// RunCommand - выполнить команду
+func RunCommand(command string) error {
+	cmd := exec.Command("cmd", "/c", command)
+	return cmd.Run()
+}
+
+// CreateCachedb - создать контейнер DragonflyDB
+func CreateCachedb(podmanPath, image string) error {
+	cmd := fmt.Sprintf("\"%s\" run -d --name cachedb -p 6379:6379 %s", podmanPath, image)
+	return RunCommand(cmd)
+}
+
+// RemoveCachedb - удалить контейнер DragonflyDB
+func RemoveCachedb(podmanPath string) error {
+	// Остановить контейнер
+	cmd := fmt.Sprintf("\"%s\" stop cachedb", podmanPath)
+	RunCommand(cmd)
+
+	// Удалить контейнер
+	cmd = fmt.Sprintf("\"%s\" rm cachedb", podmanPath)
+	return RunCommand(cmd)
+}
