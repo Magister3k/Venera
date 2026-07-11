@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest>
+  <version>1.0.0</version>
+  <buildDate>2026-07-09</buildDate>
+  <productName>Venera</productName>
+  <company>Sber</company>
+  <cpu>x64</cpu>
+  <os>Windows</os>
+  <description>Система сбора идентификаторов в потоке пакетных данных</description>
+  <author>Sber</author>
+  <copyright>Copyright © 2026 Sber</copyright>
+  <history>
+    <version>1.0.0</version>
+    <date>2026-07-09</date>
+    <changes>
+      <change>Первая стабильная версия</change>
+      <change>Два режима работы: системный трей и служба Windows</change>
+      <change>Поддержка до 20 параллельных процессов обработки</change>
+      <change>Веб-интерфейс с React UI</change>
+      <change>Две СУБД: DragonflyDB (кэш) + PostgreSQL (хранилище)</change>
+      <change>Метрики и логирование</change>
+      <change>Диагностика системы</change>
+    </changes>
+  </history>
+</manifest>
