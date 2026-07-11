@@ -1,11 +1,11 @@
-// data/parser.go - Модуль парсинга данных
+ // data/parser.go - Модуль парсинга данных
 //
 // Этот модуль обеспечивает разбор JSON-данных, полученных от Tshark,
 // с учетом допустимости использования в значениях символа ":".
-// Использует fastjson для высокопроизводительного разбора JSON.
+// Использует стандартную библиотеку encoding/json для разбора JSON.
 //
 // Основные функции:
-// - Разбор JSON-данных от Tshark с использованием fastjson
+// - Разбор JSON-данных от Tshark с использованием encoding/json
 // - Извлечение пар ключ-значение
 // - Обработка значений, содержащих символ ":"
 // - Приведение данных к формату ключ:значение:время
@@ -23,61 +23,52 @@ package data
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"time"
-
-	"github.com/segmentio/fastjson/v2"
 )
 
 // DataPair - пара ключ-значение
 type DataPair struct {
-	Key       string
-	Value     string
-	Timestamp int64
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 // Parser - структура парсера данных
 type Parser struct {
-	// fastjson парсер для эффективного разбора JSON
-	parser *fastjson.Parser
+	// Нет внешних зависимостей - используем стандартную библиотеку
 }
 
 // NewParser - создание нового парсера
 func NewParser() *Parser {
-	return &Parser{
-		parser: &fastjson.Parser{},
-	}
+	return &Parser{}
 }
 
 // ParseJSON - разбор JSON-данных
-// Использует fastjson для высокопроизводительного разбора JSON
 // Этот метод обрабатывает JSON в формате, который выводит Tshark
 func (p *Parser) ParseJSON(data []byte, timestamp int64) []DataPair {
 	var pairs []DataPair
 
-	// Разбор JSON с использованием fastjson
-	v, err := p.parser.ParseBytes(data)
-	if err != nil {
+	// Разбор JSON с использованием encoding/json
+	var jsonData interface{}
+	if err := json.Unmarshal(data, &jsonData); err != nil {
 		// Логируем ошибку парсинга, но продолжаем работу
 		// В продакшене следует использовать логгер
 		return pairs
 	}
 
 	// Проверка, является ли JSON массивом объектов
-	if v.Type() == fastjson.TypeArray {
+	switch v := jsonData.(type) {
+	case []interface{}:
 		// Обработка массива JSON-объектов (стандартный формат Tshark)
-		arr, err := v.Array()
-		if err != nil {
-			return pairs
-		}
-
-		for _, item := range arr {
+		for _, item := range v {
 			if pair := p.parseJSONObject(item, timestamp); pair != nil {
 				pairs = append(pairs, *pair)
 			}
 		}
-	} else if v.Type() == fastjson.TypeObject {
+	case map[string]interface{}:
 		// Обработка одного JSON-объекта
-		if pair := p.parseJSONObject(v, timestamp); pair != nil {
+		if pair := p.parseJSONObject(jsonData, timestamp); pair != nil {
 			pairs = append(pairs, *pair)
 		}
 	}
@@ -86,33 +77,43 @@ func (p *Parser) ParseJSON(data []byte, timestamp int64) []DataPair {
 }
 
 // parseJSONObject - разбор одного JSON-объекта
-func (p *Parser) parseJSONObject(obj *fastjson.Value, timestamp int64) *DataPair {
+func (p *Parser) parseJSONObject(obj interface{}, timestamp int64) *DataPair {
+	// Приведение к map[string]interface{}
+	fieldsMap, ok := obj.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
 	// Попытка извлечь поле "fields" или "fields.payload"
 	// Tshark может выводить данные в различных форматах
 
 	// Сначала пробуем извлечь "fields"
-	if fields := obj.Get("fields"); fields.Type() == fastjson.TypeObject {
-		return p.extractPairsFromFields(fields, timestamp)
+	if fields, hasFields := fieldsMap["fields"]; hasFields {
+		if fieldsMap, ok := fields.(map[string]interface{}); ok {
+			return p.extractPairsFromFields(fieldsMap, timestamp)
+		}
 	}
 
 	// Если нет fields, пробуем извлечь "fields.payload"
-	if fields := obj.Get("fields", "payload"); fields.Type() == fastjson.TypeString {
-		// payload может содержать JSON или просто текст
-		payloadBytes, err := fields.StringBytes()
-		if err == nil {
-			// Пытаемся разобрать как JSON
-			v, err := p.parser.ParseBytes(payloadBytes)
-			if err == nil {
-				if v.Type() == fastjson.TypeObject {
-					return p.parseJSONObject(v, timestamp)
+	if fieldsPayload, hasPayload := fieldsMap["fields"]; hasPayload {
+		if fieldsMap, ok := fieldsPayload.(map[string]interface{}); ok {
+			if payload, hasPayloadField := fieldsMap["payload"]; hasPayloadField {
+				// payload может содержать JSON или просто текст
+				if payloadStr, ok := payload.(string); ok {
+					// Пытаемся разобрать как JSON
+					var payloadJSON interface{}
+					if err := json.Unmarshal([]byte(payloadStr), &payloadJSON); err == nil {
+						if payloadMap, ok := payloadJSON.(map[string]interface{}); ok {
+							return p.parseJSONObject(payloadMap, timestamp)
+						}
+					}
+					// Если не JSON, считаем это простым значением
+					return &DataPair{
+						Key:       "payload",
+						Value:     payloadStr,
+						Timestamp: timestamp,
+					}
 				}
-			}
-			// Если не JSON, считаем это простым значением
-			payloadStr, _ := fields.StringBytes()
-			return &DataPair{
-				Key:       "payload",
-				Value:     string(payloadStr),
-				Timestamp: timestamp,
 			}
 		}
 	}
@@ -122,19 +123,31 @@ func (p *Parser) parseJSONObject(obj *fastjson.Value, timestamp int64) *DataPair
 }
 
 // extractPairsFromFields - извлечение пар ключ-значение из fields
-func (p *Parser) extractPairsFromFields(fields *fastjson.Value, timestamp int64) *DataPair {
+func (p *Parser) extractPairsFromFields(fieldsMap map[string]interface{}, timestamp int64) *DataPair {
 	// Создаем буфер для сбора всех полей
 	var buf bytes.Buffer
 
 	// Обходим все поля объекта
-	fields.Object().Visit(func(key []byte, value *fastjson.Value) {
-		if buf.Len() > 0 {
+	first := true
+	for key, value := range fieldsMap {
+		if !first {
 			buf.WriteString(",")
 		}
-		buf.Write(key)
+		first = false
+		buf.WriteString(key)
 		buf.WriteString(":")
-		buf.Write(value.StringBytes())
-	})
+		// Преобразуем значение в строку
+		switch v := value.(type) {
+		case string:
+			buf.WriteString(v)
+		case float64:
+			buf.WriteString(fmt.Sprintf("%g", v))
+		case bool:
+			buf.WriteString(fmt.Sprintf("%t", v))
+		default:
+			buf.WriteString(fmt.Sprintf("%v", v))
+		}
+	}
 
 	return &DataPair{
 		Key:       "fields",
@@ -172,12 +185,12 @@ func (p *Parser) ParseLine(line string, timestamp int64) *DataPair {
 // FormatData - форматирование данных в строку
 // Формат: ключ:значение:время
 func (p *Parser) FormatData(key, value string, timestamp int64) string {
-	return key + ":" + value + ":" + string(rune(timestamp))
+	return key + ":" + value + ":" + fmt.Sprintf("%d", timestamp)
 }
 
 // FormatDataWithSeparator - форматирование данных с разделителем
 func (p *Parser) FormatDataWithSeparator(key, value string, timestamp int64, separator string) string {
-	return key + separator + value + separator + string(rune(timestamp))
+	return key + separator + value + separator + fmt.Sprintf("%d", timestamp)
 }
 
 // UnmarshalJSON - разбор JSON в структуру DataPair
